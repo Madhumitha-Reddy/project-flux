@@ -1,0 +1,17 @@
+services:
+  server:
+    build: .
+    container_name: flux-server
+    ports:
+      - "8080:8080"
+    environment:
+      ENVIRONMENT: development
+      HOST: 0.0.0.0
+      FLUX_VAULT_PATH: /data/vaults/default
+      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:-http://localhost:3000}
+    volumes:
+      - vaults:/data/vaults
+    restart: unless-stopped
+
+volumes:
+  vaults:

@@ -1,0 +1,60 @@
+{
+  "name": "@flux/desktop",
+  "version": "0.0.1",
+  "description": "FLUX personal knowledge management desktop application",
+  "author": "FLUX Contributors",
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "bun run clean:build && bun run build:server && tsc --noEmit && vite build && electron-builder",
+    "build:server": "mkdir -p resources && ${GO_BIN:-/usr/local/go/bin/go} -C ../../server build -o ../apps/desktop/resources/flux-server .",
+    "preview": "vite preview",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "clean:build": "rm -rf dist dist-electron release resources/flux-server",
+    "clean": "bun run clean:build"
+  },
+  "dependencies": {
+    "@flux/app-core": "workspace:*",
+    "@flux/client-desktop": "workspace:*",
+    "@flux/shared-ui": "workspace:*",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.0",
+    "electron": "43.1.1",
+    "electron-builder": "^26.15.3",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.0",
+    "vite-plugin-electron": "^1.1.0"
+  },
+  "build": {
+    "appId": "com.flux.desktop",
+    "productName": "FLUX",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/flux-server",
+        "to": "flux-server"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity"
+    }
+  }
+}

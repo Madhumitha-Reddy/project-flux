@@ -1,0 +1,41 @@
+{
+  "name": "@flux/shared-ui",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#components/*": "./src/components/*.tsx",
+    "#hooks/*": "./src/hooks/*.ts",
+    "#lib/*": "./src/lib/*.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./globals.css": "./src/styles/globals.css",
+    "./components/*": "./src/components/*.tsx",
+    "./hooks/*": "./src/hooks/*.ts",
+    "./lib/*": "./src/lib/*.ts"
+  },
+  "types": "./src/index.ts",
+  "scripts": {
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.2.8",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.24.0",
+    "motion": "^12.42.2",
+    "radix-ui": "^1.6.2",
+    "sonner": "^2.0.7",
+    "tailwind-merge": "^3.6.0"
+  },
+  "peerDependencies": {
+    "react": "^19.2.6"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "react": "^19.2.6",
+    "typescript": "^6.0.2"
+  }
+}

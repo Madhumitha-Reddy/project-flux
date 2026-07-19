@@ -1,0 +1,39 @@
+{
+  "name": "flux",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.2.18",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --filter=@flux/desktop",
+    "dev:all": "turbo run dev",
+    "dev:desktop": "turbo run dev --filter=@flux/desktop",
+    "dev:web": "turbo run dev --filter=@flux/web",
+    "dev:server": "${GO_BIN:-/usr/local/go/bin/go} -C server run .",
+    "test:server": "${GO_BIN:-/usr/local/go/bin/go} -C server test ./...",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "bun run typecheck && bun --cwd packages/client-web test && bun run test:server",
+    "clean": "turbo run clean && bun run clean:cache",
+    "clean:cache": "rm -rf .cache .turbo apps/*/.turbo packages/*/.turbo",
+    "format": "prettier --write \"**/*.{ts,tsx,md}\""
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.0.3",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.4.0",
+    "prettier": "^3.2.5",
+    "turbo": "^2.0.0",
+    "typescript-eslint": "^8.56.1"
+  },
+  "engines": {
+    "node": ">=20.19.0 || >=22.12.0"
+  }
+}
