@@ -124,9 +124,20 @@ function PaneTabs<T extends string>({
 function SidebarToolbar({ children, wrap = false }: { children: ReactNode; wrap?: boolean }) {
   return (
     <div
-      className={`flex min-h-9 items-center justify-center gap-0.5 px-2 ${wrap ? "flex-wrap py-1" : ""}`}
+      className={`sticky top-0 z-30 flex min-h-9 shrink-0 items-center justify-center gap-0.5 bg-sidebar px-2 ${wrap ? "flex-wrap py-1" : ""}`}
     >
       {children}
+    </div>
+  );
+}
+
+function SidebarPane({ controls, children }: { controls: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+      <div className="shrink-0 bg-sidebar">{controls}</div>
+      <div className="flux-editor-scroll flux-sidebar-scroll min-h-0 min-w-0 flex-1 overflow-x-clip overflow-y-auto">
+        {children}
+      </div>
     </div>
   );
 }
@@ -492,7 +503,7 @@ function SearchPane({
 
   return (
     <>
-      <div className="flex items-center gap-1 p-2">
+      <div className="sticky top-0 z-30 flex items-center gap-1 bg-sidebar p-2">
         <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md border bg-background px-2 [border-color:var(--layout-separator)]">
           <Search className="size-3.5 text-muted-foreground" />
           <input
@@ -682,9 +693,12 @@ function LeftSidebar({
   onPreviewPath?: (path: string) => Promise<string | null>;
 }) {
   return (
-    <section className="flex h-full min-h-0 flex-col" aria-label="Left sidebar">
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div hidden={pane !== "files"}>
+    <section
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
+      aria-label="Left sidebar"
+    >
+      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div className="h-full min-h-0 max-w-full" hidden={pane !== "files"}>
           {vaultEntries ? (
             <VaultExplorer
               entries={vaultEntries}
@@ -710,10 +724,16 @@ function LeftSidebar({
             />
           )}
         </div>
-        <div hidden={pane !== "search"}>
+        <div
+          className="flux-editor-scroll flux-sidebar-scroll h-full min-h-0 overflow-x-clip overflow-y-auto"
+          hidden={pane !== "search"}
+        >
           <SearchPane documents={documents} onOpenDocument={onOpenDocument} />
         </div>
-        <div hidden={pane !== "bookmarks"}>
+        <div
+          className="flux-editor-scroll flux-sidebar-scroll h-full min-h-0 overflow-x-clip overflow-y-auto"
+          hidden={pane !== "bookmarks"}
+        >
           <BookmarksPane activeTitle={activeTitle} onOpenDocument={onOpenDocument} />
         </div>
       </div>
@@ -742,7 +762,7 @@ function RightContent({
   const [collapsedResults, setCollapsedResults] = useState(false);
   const [moreContext, setMoreContext] = useState(false);
   const filterField = filterVisible ? (
-    <div className="px-2 pb-2">
+    <div className="bg-sidebar px-2 pb-2">
       <label className="flex h-8 items-center gap-2 rounded-md border bg-background px-2 [border-color:var(--layout-separator)]">
         <Search className="size-3.5 text-muted-foreground" />
         <input
@@ -774,23 +794,28 @@ function RightContent({
       title.toLocaleLowerCase().includes(filter.toLocaleLowerCase())
     );
     return (
-      <>
-        <SidebarToolbar>
-          <IconButton
-            label="Show search filter"
-            active={filterVisible}
-            onClick={() => setFilterVisible((current) => !current)}
-          >
-            <Search className="size-3.5" />
-          </IconButton>
-          <IconButton label="Expand all headings" onClick={() => setCollapsedResults(false)}>
-            <ChevronsUpDown className="size-3.5" />
-          </IconButton>
-          <IconButton label="Collapse all headings" onClick={() => setCollapsedResults(true)}>
-            <ListCollapse className="size-3.5" />
-          </IconButton>
-        </SidebarToolbar>
-        {filterField}
+      <SidebarPane
+        controls={
+          <>
+            <SidebarToolbar>
+              <IconButton
+                label="Show search filter"
+                active={filterVisible}
+                onClick={() => setFilterVisible((current) => !current)}
+              >
+                <Search className="size-3.5" />
+              </IconButton>
+              <IconButton label="Expand all headings" onClick={() => setCollapsedResults(false)}>
+                <ChevronsUpDown className="size-3.5" />
+              </IconButton>
+              <IconButton label="Collapse all headings" onClick={() => setCollapsedResults(true)}>
+                <ListCollapse className="size-3.5" />
+              </IconButton>
+            </SidebarToolbar>
+            {filterField}
+          </>
+        }
+      >
         <div className="p-2 text-xs">
           {collapsedResults
             ? null
@@ -806,7 +831,7 @@ function RightContent({
                 </button>
               ))}
         </div>
-      </>
+      </SidebarPane>
     );
   }
   if (pane === "backlinks") {
@@ -855,38 +880,43 @@ function RightContent({
         </button>
       ));
     return (
-      <>
-        <SidebarToolbar>
-          <IconButton
-            label="Collapse results"
-            active={collapsedResults}
-            onClick={() => setCollapsedResults((current) => !current)}
-          >
-            <ListCollapse className="size-3.5" />
-          </IconButton>
-          <IconButton
-            label="Show more context"
-            active={moreContext}
-            onClick={() => setMoreContext((current) => !current)}
-          >
-            <ChevronsUpDown className="size-3.5" />
-          </IconButton>
-          <IconButton
-            label="Change sort order"
-            active={descending}
-            onClick={() => setDescending((current) => !current)}
-          >
-            <ListFilter className="size-3.5" />
-          </IconButton>
-          <IconButton
-            label="Show search filter"
-            active={filterVisible}
-            onClick={() => setFilterVisible((current) => !current)}
-          >
-            <Search className="size-3.5" />
-          </IconButton>
-        </SidebarToolbar>
-        {filterField}
+      <SidebarPane
+        controls={
+          <>
+            <SidebarToolbar>
+              <IconButton
+                label="Collapse results"
+                active={collapsedResults}
+                onClick={() => setCollapsedResults((current) => !current)}
+              >
+                <ListCollapse className="size-3.5" />
+              </IconButton>
+              <IconButton
+                label="Show more context"
+                active={moreContext}
+                onClick={() => setMoreContext((current) => !current)}
+              >
+                <ChevronsUpDown className="size-3.5" />
+              </IconButton>
+              <IconButton
+                label="Change sort order"
+                active={descending}
+                onClick={() => setDescending((current) => !current)}
+              >
+                <ListFilter className="size-3.5" />
+              </IconButton>
+              <IconButton
+                label="Show search filter"
+                active={filterVisible}
+                onClick={() => setFilterVisible((current) => !current)}
+              >
+                <Search className="size-3.5" />
+              </IconButton>
+            </SidebarToolbar>
+            {filterField}
+          </>
+        }
+      >
         <div className="px-3 py-2 text-xs">
           <div className="flex items-center justify-between py-1 font-medium text-foreground">
             <span>Linked mentions</span>
@@ -907,7 +937,7 @@ function RightContent({
             <p className="py-2 text-muted-foreground">No unlinked mentions found.</p>
           )}
         </div>
-      </>
+      </SidebarPane>
     );
   }
   if (pane === "outgoing") {
@@ -916,24 +946,29 @@ function RightContent({
       .filter((title) => title.toLocaleLowerCase().includes(filter.toLocaleLowerCase()))
       .sort((a, b) => (descending ? b.localeCompare(a) : a.localeCompare(b)));
     return (
-      <>
-        <SidebarToolbar>
-          <IconButton
-            label="Change sort order"
-            active={descending}
-            onClick={() => setDescending((current) => !current)}
-          >
-            <ListFilter className="size-3.5" />
-          </IconButton>
-          <IconButton
-            label="Show search filter"
-            active={filterVisible}
-            onClick={() => setFilterVisible((current) => !current)}
-          >
-            <Search className="size-3.5" />
-          </IconButton>
-        </SidebarToolbar>
-        {filterField}
+      <SidebarPane
+        controls={
+          <>
+            <SidebarToolbar>
+              <IconButton
+                label="Change sort order"
+                active={descending}
+                onClick={() => setDescending((current) => !current)}
+              >
+                <ListFilter className="size-3.5" />
+              </IconButton>
+              <IconButton
+                label="Show search filter"
+                active={filterVisible}
+                onClick={() => setFilterVisible((current) => !current)}
+              >
+                <Search className="size-3.5" />
+              </IconButton>
+            </SidebarToolbar>
+            {filterField}
+          </>
+        }
+      >
         <div className="px-3 py-2 text-xs">
           <div className="flex items-center justify-between py-1 font-medium">
             <span>Links</span>
@@ -952,7 +987,7 @@ function RightContent({
           ))}
           <div className="mt-3 py-1 font-medium text-muted-foreground">Unlinked mentions</div>
         </div>
-      </>
+      </SidebarPane>
     );
   }
   if (pane === "tags") {
@@ -970,38 +1005,43 @@ function RightContent({
       .filter(([tag]) => tag.toLocaleLowerCase().includes(filter.toLocaleLowerCase()))
       .sort(([a], [b]) => (descending ? b.localeCompare(a) : a.localeCompare(b)));
     return (
-      <>
-        <SidebarToolbar>
-          <IconButton
-            label="Change sort order"
-            active={descending}
-            onClick={() => setDescending((current) => !current)}
-          >
-            <ListFilter className="size-3.5" />
-          </IconButton>
-          <IconButton
-            label="Show nested tags"
-            active={moreContext}
-            onClick={() => setMoreContext((current) => !current)}
-          >
-            <Network className="size-3.5" />
-          </IconButton>
-          <IconButton
-            label="Collapse all"
-            active={collapsedResults}
-            onClick={() => setCollapsedResults((current) => !current)}
-          >
-            <ChevronsUpDown className="size-3.5" />
-          </IconButton>
-          <IconButton
-            label="Show search filter"
-            active={filterVisible}
-            onClick={() => setFilterVisible((current) => !current)}
-          >
-            <Search className="size-3.5" />
-          </IconButton>
-        </SidebarToolbar>
-        {filterField}
+      <SidebarPane
+        controls={
+          <>
+            <SidebarToolbar>
+              <IconButton
+                label="Change sort order"
+                active={descending}
+                onClick={() => setDescending((current) => !current)}
+              >
+                <ListFilter className="size-3.5" />
+              </IconButton>
+              <IconButton
+                label="Show nested tags"
+                active={moreContext}
+                onClick={() => setMoreContext((current) => !current)}
+              >
+                <Network className="size-3.5" />
+              </IconButton>
+              <IconButton
+                label="Collapse all"
+                active={collapsedResults}
+                onClick={() => setCollapsedResults((current) => !current)}
+              >
+                <ChevronsUpDown className="size-3.5" />
+              </IconButton>
+              <IconButton
+                label="Show search filter"
+                active={filterVisible}
+                onClick={() => setFilterVisible((current) => !current)}
+              >
+                <Search className="size-3.5" />
+              </IconButton>
+            </SidebarToolbar>
+            {filterField}
+          </>
+        }
+      >
         <div className="px-3 py-2 text-xs">
           {collapsedResults
             ? null
@@ -1012,7 +1052,7 @@ function RightContent({
                 </div>
               ))}
         </div>
-      </>
+      </SidebarPane>
     );
   }
   if (pane === "properties") {
@@ -1020,24 +1060,29 @@ function RightContent({
       .filter(({ key }) => key.toLocaleLowerCase().includes(filter.toLocaleLowerCase()))
       .sort((a, b) => (descending ? b.key.localeCompare(a.key) : a.key.localeCompare(b.key)));
     return (
-      <>
-        <SidebarToolbar>
-          <IconButton
-            label="Change sort order"
-            active={descending}
-            onClick={() => setDescending((current) => !current)}
-          >
-            <ListFilter className="size-3.5" />
-          </IconButton>
-          <IconButton
-            label="Show search filter"
-            active={filterVisible}
-            onClick={() => setFilterVisible((current) => !current)}
-          >
-            <Search className="size-3.5" />
-          </IconButton>
-        </SidebarToolbar>
-        {filterField}
+      <SidebarPane
+        controls={
+          <>
+            <SidebarToolbar>
+              <IconButton
+                label="Change sort order"
+                active={descending}
+                onClick={() => setDescending((current) => !current)}
+              >
+                <ListFilter className="size-3.5" />
+              </IconButton>
+              <IconButton
+                label="Show search filter"
+                active={filterVisible}
+                onClick={() => setFilterVisible((current) => !current)}
+              >
+                <Search className="size-3.5" />
+              </IconButton>
+            </SidebarToolbar>
+            {filterField}
+          </>
+        }
+      >
         <div className="divide-y px-3 text-xs [divide-color:var(--layout-separator)]">
           {properties.map((property) => (
             <label key={property.key} className="flex items-center justify-between gap-3 py-2">
@@ -1057,38 +1102,41 @@ function RightContent({
             + Add property
           </button>
         </div>
-      </>
+      </SidebarPane>
     );
   }
   if (pane === "source-control")
     return (
-      <>
-        <SidebarToolbar wrap>
-          <IconButton label="Commit and sync">
-            <ArrowUp className="size-3.5" />
-          </IconButton>
-          <IconButton label="Commit">
-            <CircleDot className="size-3.5" />
-          </IconButton>
-          <IconButton label="Stage all">
-            <PlusCircle className="size-3.5" />
-          </IconButton>
-          <IconButton label="Unstage all">
-            <MinusCircle className="size-3.5" />
-          </IconButton>
-          <IconButton label="Push">
-            <ArrowUp className="size-3.5" />
-          </IconButton>
-          <IconButton label="Pull">
-            <ArrowDown className="size-3.5" />
-          </IconButton>
-          <IconButton label="Open repository">
-            <FolderOpen className="size-3.5" />
-          </IconButton>
-          <IconButton label="Refresh">
-            <RefreshCw className="size-3.5" />
-          </IconButton>
-        </SidebarToolbar>
+      <SidebarPane
+        controls={
+          <SidebarToolbar wrap>
+            <IconButton label="Commit and sync">
+              <ArrowUp className="size-3.5" />
+            </IconButton>
+            <IconButton label="Commit">
+              <CircleDot className="size-3.5" />
+            </IconButton>
+            <IconButton label="Stage all">
+              <PlusCircle className="size-3.5" />
+            </IconButton>
+            <IconButton label="Unstage all">
+              <MinusCircle className="size-3.5" />
+            </IconButton>
+            <IconButton label="Push">
+              <ArrowUp className="size-3.5" />
+            </IconButton>
+            <IconButton label="Pull">
+              <ArrowDown className="size-3.5" />
+            </IconButton>
+            <IconButton label="Open repository">
+              <FolderOpen className="size-3.5" />
+            </IconButton>
+            <IconButton label="Refresh">
+              <RefreshCw className="size-3.5" />
+            </IconButton>
+          </SidebarToolbar>
+        }
+      >
         <div className="p-2">
           <label className="flex h-8 items-center rounded-md border bg-background px-2 [border-color:var(--layout-separator)]">
             <input
@@ -1098,7 +1146,7 @@ function RightContent({
             />
           </label>
         </div>
-      </>
+      </SidebarPane>
     );
   return null;
 }
@@ -1119,8 +1167,11 @@ function RightSidebar({
   onAddProperty: () => void;
 }) {
   return (
-    <section className="flex h-full min-h-0 flex-col" aria-label="Right sidebar">
-      <div className="min-h-0 flex-1 overflow-y-auto">
+    <section
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
+      aria-label="Right sidebar"
+    >
+      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
         <RightContent
           pane={pane}
           activeDocument={activeDocument}

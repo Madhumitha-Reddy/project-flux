@@ -127,8 +127,6 @@ func (m *Manager) Open(requestedPath string) (*Context, error) {
 	indexStore, indexErr := index.Open(filepath.Join(fluxDirectory, "index.db"))
 	if indexErr != nil {
 		state = domain.VaultStateDegraded
-	} else if entries, listErr := fileService.List(); listErr != nil || indexStore.ReplaceFiles(entries) != nil {
-		state = domain.VaultStateDegraded
 	}
 
 	next := &Context{
@@ -145,13 +143,6 @@ func (m *Manager) Open(requestedPath string) (*Context, error) {
 	next.Revision.Store(1)
 	next.Watch, err = watcherRuntime.Start(root, func() {
 		next.bumpRevision()
-		if next.Index == nil {
-			return
-		}
-		entries, listErr := next.Files.List()
-		if listErr != nil || next.Index.ReplaceFiles(entries) != nil {
-			next.degrade()
-		}
 	})
 	if err != nil {
 		next.degrade()

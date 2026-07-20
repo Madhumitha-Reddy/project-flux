@@ -90,6 +90,28 @@ export interface FluxAppProps {
 
 const DOCUMENT_LIBRARY = [DEMO_DOCUMENT, ...REFERENCE_DOCUMENTS];
 const bootstrapStatus = new WeakMap<FluxClient, Promise<ServerStatus>>();
+const LAST_VAULT_PATH_KEY = "flux-last-vault-path";
+
+interface PersistedVaultSession {
+  tabs: Array<{ path: string; mode: WorkspaceTab["mode"]; pinned: boolean }>;
+  activePath?: string;
+}
+
+function sessionStorageKey(vaultId: string) {
+  return `flux-vault-session:${vaultId}`;
+}
+
+function readVaultSession(vaultId: string): PersistedVaultSession | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(sessionStorageKey(vaultId)) ?? "null") as
+      | PersistedVaultSession
+      | null;
+    if (!value || !Array.isArray(value.tabs)) return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
 
 function getBootstrapStatus(client: FluxClient) {
   let pending = bootstrapStatus.get(client);
@@ -189,6 +211,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   ]);
   const [activeTabId, setActiveTabId] = useState(1);
   const [activeVaultId, setActiveVaultId] = useState("");
+  const [sessionVaultId, setSessionVaultId] = useState("");
   const [vault, setVault] = useState<VaultInfo | null>(null);
   const [fileEntries, setFileEntries] = useState<FileEntry[]>([]);
   const [vaultDocuments, setVaultDocuments] = useState<DemoDocument[]>([]);
@@ -406,7 +429,11 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
 
   const refreshVaultDocuments = async (vaultId: string, entries: FileEntry[]) => {
     if (!runtime.client) return [];
-    const markdownEntries = entries.filter((entry) => entry.kind === "markdown");
+    const markdownEntries = entries.filter(
+      (entry) =>
+        (entry.kind === "markdown" || entry.kind === "text") &&
+        savedDocumentsRef.current.has(entry.path)
+    );
     const loaded = await Promise.all(
       markdownEntries.map(async (entry) => {
         const version = `${entry.modifiedAt}:${entry.sizeBytes}`;
@@ -421,8 +448,13 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
         } satisfies DemoDocument;
       })
     );
-    savedDocumentsRef.current.clear();
-    vaultFileVersionsRef.current.clear();
+    const visiblePaths = new Set(entries.map((entry) => entry.path));
+    for (const path of savedDocumentsRef.current.keys()) {
+      if (!visiblePaths.has(path)) savedDocumentsRef.current.delete(path);
+    }
+    for (const path of vaultFileVersionsRef.current.keys()) {
+      if (!visiblePaths.has(path)) vaultFileVersionsRef.current.delete(path);
+    }
     for (let index = 0; index < loaded.length; index += 1) {
       const document = loaded[index];
       const entry = markdownEntries[index];
@@ -438,22 +470,71 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   const loadVault = async (info: VaultInfo) => {
     if (!runtime.client) return;
     setStatus(`Opening ${info.name}…`);
+    setSessionVaultId("");
     setVault(info);
     setActiveVaultId(info.id);
     setVaultDocuments([]);
     savedDocumentsRef.current.clear();
     vaultFileVersionsRef.current.clear();
     const entries = await refreshFiles(info.id);
-    const loaded = await refreshVaultDocuments(info.id, entries);
-    const first = loaded[0];
-    if (!first) {
+    const persisted = readVaultSession(info.id);
+    const entryByPath = new Map(entries.map((entry) => [entry.path, entry]));
+    const requestedTabs =
+      persisted?.tabs.filter(({ path }) => {
+        const entry = entryByPath.get(path);
+        return entry?.kind === "markdown" || entry?.kind === "text";
+      }) ?? [];
+    const loaded = await Promise.all(
+      requestedTabs.map(async ({ path, mode, pinned }, index) => {
+        const file = await runtime.client!.readFile(info.id, path);
+        const document: DemoDocument = {
+          title: titleFromPath(file.path),
+          path: file.path,
+          content: file.content,
+          contentHash: file.contentHash,
+        };
+        const entry = entryByPath.get(path);
+        savedDocumentsRef.current.set(path, document);
+        if (entry) vaultFileVersionsRef.current.set(path, `${entry.modifiedAt}:${entry.sizeBytes}`);
+        return { ...createWorkspaceTab(index + 1, document), mode, pinned };
+      })
+    );
+    setVaultDocuments(loaded.flatMap((tab) => (tab.document ? [tab.document] : [])));
+    if (!loaded.length) {
       replaceWorkspaceDocument(null);
     } else {
-      replaceWorkspaceDocument(first);
+      const active =
+        loaded.find((tab) => tab.document?.path === persisted?.activePath) ?? loaded[0];
+      const tabIds = loaded.map((tab) => tab.id);
+      setTabs(loaded);
+      setActiveTabId(active.id);
+      setNextTabId(loaded.length + 1);
+      setWorkspaceRoot({
+        kind: "leaf",
+        id: 1,
+        view: "editor",
+        tabIds,
+        activeTabId: active.id,
+      });
+      setActiveLeafId(1);
     }
+    setSessionVaultId(info.id);
     setVaultPickerOpen(false);
     setStatus(`Go backend connected · ${info.name}`);
   };
+
+  useEffect(() => {
+    if (!vault || sessionVaultId !== vault.id) return;
+    const persisted: PersistedVaultSession = {
+      tabs: tabs.flatMap((tab) =>
+        tab.document?.path
+          ? [{ path: tab.document.path, mode: tab.mode, pinned: Boolean(tab.pinned) }]
+          : []
+      ),
+      activePath: tabs.find((tab) => tab.id === activeTabId)?.document?.path,
+    };
+    localStorage.setItem(sessionStorageKey(vault.id), JSON.stringify(persisted));
+  }, [activeTabId, sessionVaultId, tabs, vault]);
 
   useEffect(() => {
     if (!runtime.client || !vault) return;
@@ -514,6 +595,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
               ? await runtime.client!.createVault({ path })
               : await runtime.client!.openVault({ path });
           await loadVault(info);
+          localStorage.setItem(LAST_VAULT_PATH_KEY, path);
         })(),
         {
           loading: mode === "create" ? "Creating vault…" : "Opening vault…",
@@ -1131,9 +1213,13 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     : 0;
 
   const openDocument = async (identifier: string) => {
-    const requestedEntry = vault
-      ? fileEntries.find((entry) => entry.path === identifier)
-      : undefined;
+    const exactEntry = vault ? fileEntries.find((entry) => entry.path === identifier) : undefined;
+    const titleMatches = vault
+      ? fileEntries.filter(
+          (entry) => entry.kind === "markdown" && titleFromPath(entry.path) === identifier
+        )
+      : [];
+    const requestedEntry = exactEntry ?? (titleMatches.length === 1 ? titleMatches[0] : undefined);
     const requestedPath = vault
       ? (requestedEntry?.path ??
         vaultDocuments.find((document) => document.title === identifier)?.path ??
@@ -1230,6 +1316,9 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
           contentHash: file.contentHash,
         };
         savedDocumentsRef.current.set(file.path, document);
+        const entry = fileEntries.find((candidate) => candidate.path === file.path);
+        if (entry)
+          vaultFileVersionsRef.current.set(file.path, `${entry.modifiedAt}:${entry.sizeBytes}`);
         setVaultDocuments((current) => [
           ...current.filter((item) => item.path !== file.path),
           document!,
@@ -1323,8 +1412,18 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
         if (runtime.client) {
           const server = await getBootstrapStatus(runtime.client);
           if (!active) return;
-          if (server.openVault) await loadVault(server.openVault);
-          else {
+          if (server.openVault) {
+            await loadVault(server.openVault);
+          } else {
+            const lastPath = localStorage.getItem(LAST_VAULT_PATH_KEY);
+            if (lastPath) {
+              try {
+                await loadVault(await runtime.client.openVault({ path: lastPath }));
+                return;
+              } catch {
+                localStorage.removeItem(LAST_VAULT_PATH_KEY);
+              }
+            }
             setStatus("Go backend connected · no vault open");
             setVaultPickerOpen(true);
           }

@@ -56,16 +56,7 @@ func (s *Service) ListFiles(vaultID string) ([]domain.FileEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := context.Files.List()
-	if err != nil {
-		return nil, err
-	}
-	if context.Index != nil {
-		if err := context.Index.ReplaceFiles(entries); err != nil {
-			s.vaults.Degrade(vaultID)
-		}
-	}
-	return entries, nil
+	return context.Files.List()
 }
 
 func (s *Service) VaultRevision(vaultID string) (uint64, error) {

@@ -150,30 +150,44 @@
   }
 }
 
+/* Sidebars scroll vertically; file names and nested content must never create an X scrollbar. */
+.flux-sidebar-scroll::-webkit-scrollbar:horizontal {
+  display: none;
+  height: 0;
+}
+
 @layer components {
-  .flux-editor-scroll {
+  .flux-editor-scroll,
+  .flux-sidebar-scroll {
     scrollbar-color: color-mix(in oklab, var(--foreground) 28%, transparent) transparent;
     scrollbar-width: thin;
   }
 
-  .flux-editor-scroll::-webkit-scrollbar {
-    width: 10px;
-  }
-
-  .flux-editor-scroll::-webkit-scrollbar-track,
-  .flux-editor-scroll::-webkit-scrollbar-corner {
+  .flux-editor-scroll::-webkit-scrollbar,
+  .flux-sidebar-scroll::-webkit-scrollbar {
+    width: 6px;
+    height: 0;
     background: transparent;
   }
 
-  .flux-editor-scroll::-webkit-scrollbar-thumb {
-    border: 3px solid transparent;
+  .flux-editor-scroll::-webkit-scrollbar-track,
+  .flux-editor-scroll::-webkit-scrollbar-corner,
+  .flux-sidebar-scroll::-webkit-scrollbar-track,
+  .flux-sidebar-scroll::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  .flux-editor-scroll::-webkit-scrollbar-thumb,
+  .flux-sidebar-scroll::-webkit-scrollbar-thumb {
+    border: 1px solid transparent;
     border-radius: 999px;
-    background: color-mix(in oklab, var(--foreground) 28%, transparent);
+    background: color-mix(in oklab, var(--foreground) 24%, transparent);
     background-clip: padding-box;
   }
 
-  .flux-editor-scroll:hover::-webkit-scrollbar-thumb {
-    background-color: color-mix(in oklab, var(--foreground) 42%, transparent);
+  .flux-editor-scroll:hover::-webkit-scrollbar-thumb,
+  .flux-sidebar-scroll:hover::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklab, var(--foreground) 40%, transparent);
   }
 
   .flux-reading-view {

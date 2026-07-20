@@ -56,7 +56,7 @@ func (s *Service) List() ([]domain.FileEntry, error) {
 			return err
 		}
 		relativePath = filepath.ToSlash(relativePath)
-		if IsInternal(relativePath) {
+		if IsIgnored(relativePath) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -595,11 +595,22 @@ func rejectSymlinks(root, target string) error {
 func IsInternal(relativePath string) bool {
 	first, _, _ := strings.Cut(relativePath, "/")
 	switch first {
-	case ".flux", ".git", ".obsidian", "node_modules", "dist", "build":
+	case ".flux", ".git", ".obsidian":
 		return true
 	default:
 		return false
 	}
+}
+
+// IsIgnored applies vault traversal exclusions at every directory depth.
+func IsIgnored(relativePath string) bool {
+	for _, component := range strings.Split(filepath.ToSlash(relativePath), "/") {
+		switch component {
+		case ".flux", ".git", ".obsidian", ".agents", ".cache", ".codex-plugins", ".turbo", "node_modules", "dist", "build":
+			return true
+		}
+	}
+	return false
 }
 
 func fileEntry(relativePath string, info os.FileInfo) domain.FileEntry {

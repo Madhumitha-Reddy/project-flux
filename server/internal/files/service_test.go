@@ -38,6 +38,44 @@ func TestListHidesMacMetadata(t *testing.T) {
 	}
 }
 
+func TestListIgnoresHeavyDirectoriesAtAnyDepth(t *testing.T) {
+	root := t.TempDir()
+	for _, candidate := range []string{
+		"node_modules/top.md",
+		"packages/app/node_modules/nested.md",
+		"packages/app/.cache/cached.md",
+		"packages/app/dist/output.md",
+		"packages/app/src/visible.md",
+	} {
+		path := filepath.Join(root, filepath.FromSlash(candidate))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(candidate), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, err := New(root).List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if IsIgnored(entry.Path) {
+			t.Fatalf("ignored entry leaked into listing: %s", entry.Path)
+		}
+	}
+	found := false
+	for _, entry := range entries {
+		if entry.Path == "packages/app/src/visible.md" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("visible source file missing")
+	}
+}
+
 func TestSaveUsesExpectedHash(t *testing.T) {
 	root := t.TempDir()
 	filePath := filepath.Join(root, "note.md")

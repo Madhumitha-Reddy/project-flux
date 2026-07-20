@@ -53,7 +53,7 @@ func (s *Service) planLinkRewrites(sourcePath, destinationPath string) ([]linkRe
 			return err
 		}
 		relative = filepath.ToSlash(relative)
-		if IsInternal(relative) {
+		if IsIgnored(relative) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}

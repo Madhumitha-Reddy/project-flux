@@ -80,7 +80,7 @@ export function VaultExplorer({
   documents,
 }: VaultExplorerProps) {
   const [selectedFolder, setSelectedFolder] = useState<string>();
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [sortByName, setSortByName] = useState(true);
   const [showArchived, setShowArchived] = useState(false);
   const [dropTarget, setDropTarget] = useState<string>();
@@ -169,9 +169,9 @@ export function VaultExplorer({
   const beginCreate = (kind: "note" | "folder", parent: string) => {
     cancelInlineEditRef.current = false;
     if (parent) {
-      setCollapsed((current) => {
+      setExpandedPaths((current) => {
         const next = new Set(current);
-        next.delete(parent);
+        next.add(parent);
         return next;
       });
     }
@@ -250,7 +250,7 @@ export function VaultExplorer({
       return <div key={entry.path}>{renderInlineEdit("", depth, entry)}</div>;
     }
     const directory = entry.kind === "directory";
-    const expanded = !collapsed.has(entry.path);
+    const expanded = expandedPaths.has(entry.path);
     const presentation = filePresentation(entry);
     const metadata = entryMetadata(entry);
     const row = (
@@ -273,7 +273,7 @@ export function VaultExplorer({
             return;
           }
           setSelectedFolder(entry.path);
-          setCollapsed((current) => {
+          setExpandedPaths((current) => {
             const next = new Set(current);
             if (next.has(entry.path)) next.delete(entry.path);
             else next.add(entry.path);
@@ -331,7 +331,7 @@ export function VaultExplorer({
           setDropTarget(undefined);
         }}
         onPointerLeave={() => hidePreview(entry.path)}
-        className={`flex w-full select-none items-center gap-1.5 rounded-md py-1.5 pr-2 text-left text-xs outline-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring/50 ${
+        className={`flex w-full min-w-0 max-w-full select-none items-center gap-1.5 overflow-hidden rounded-md py-1.5 pr-2 text-left text-xs outline-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring/50 ${
           dropTarget === entry.path
             ? "bg-primary/10 text-foreground ring-1 ring-inset ring-primary/50"
             : entry.path === activePath
@@ -457,7 +457,12 @@ export function VaultExplorer({
           </ContextMenu.Portal>
         </ContextMenu.Root>
         {directory && expanded ? (
-          <div role="group">
+          <div role="group" className="relative">
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 w-px bg-[color-mix(in_oklab,var(--muted-foreground)_16%,transparent)]"
+              style={{ left: 15 + depth * 16 }}
+            />
             {renderInlineEdit(entry.path, depth + 1)}
             {(children.get(entry.path) ?? []).map((child) => renderEntry(child, depth + 1))}
           </div>
@@ -467,8 +472,8 @@ export function VaultExplorer({
   };
 
   return (
-    <>
-      <div className="flex min-h-9 items-center justify-center gap-0.5 px-2">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+      <div className="flex min-h-9 shrink-0 items-center justify-center gap-0.5 bg-sidebar px-2">
         <button
           type="button"
           aria-label="New note"
@@ -518,13 +523,7 @@ export function VaultExplorer({
           type="button"
           aria-label="Collapse all"
           title="Collapse all"
-          onClick={() =>
-            setCollapsed(
-              new Set(
-                entries.filter((entry) => entry.kind === "directory").map((entry) => entry.path)
-              )
-            )
-          }
+          onClick={() => setExpandedPaths(new Set())}
           className="grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-accent"
         >
           <ChevronRight className="size-3.5" />
@@ -532,7 +531,7 @@ export function VaultExplorer({
       </div>
       <div
         data-flux-drop-folder=""
-        className={`min-h-16 p-1.5 ${dropTarget === "" ? "bg-primary/5 ring-1 ring-inset ring-primary/40" : ""}`}
+        className={`flux-editor-scroll flux-sidebar-scroll min-h-0 min-w-0 flex-1 overflow-x-clip overflow-y-auto p-1.5 ${dropTarget === "" ? "bg-primary/5 ring-1 ring-inset ring-primary/40" : ""}`}
         role="tree"
         aria-label="Files"
         onClick={(event) => {
@@ -578,6 +577,6 @@ export function VaultExplorer({
           </div>
         </div>
       ) : null}
-    </>
+    </div>
   );
 }

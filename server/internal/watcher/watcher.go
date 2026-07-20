@@ -133,5 +133,5 @@ func (w *Watcher) ignored(current string) bool {
 		strings.HasSuffix(base, ".swp") || strings.HasSuffix(base, "~") || base == ".DS_Store" {
 		return true
 	}
-	return files.IsInternal(filepath.ToSlash(relative))
+	return files.IsIgnored(filepath.ToSlash(relative))
 }
