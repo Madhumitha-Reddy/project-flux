@@ -936,17 +936,14 @@ export function MarkdownDocumentMenu({
         <FolderInput className="size-4" />
         Move file to…
       </DisabledItem>
-      <DropdownMenu.CheckboxItem
-        checked={bookmarked}
-        onCheckedChange={onBookmarkChange}
+      <DropdownMenu.Item
         className={menuItemClassName}
+        onSelect={() => onBookmarkChange(true)}
       >
         <Bookmark className="size-4 text-muted-foreground" />
         Bookmark…
-        <DropdownMenu.ItemIndicator>
-          <MenuCheck />
-        </DropdownMenu.ItemIndicator>
-      </DropdownMenu.CheckboxItem>
+        {bookmarked ? <MenuCheck /> : null}
+      </DropdownMenu.Item>
       <DropdownMenu.Item className={menuItemClassName} onSelect={onMerge}>
         <Merge className="size-4" />
         Merge entire file with…
