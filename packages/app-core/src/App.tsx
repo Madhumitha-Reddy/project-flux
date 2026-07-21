@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState, type DragEvent } 
 import { AnimatePresence, LazyMotion, LayoutGroup, MotionConfig, domAnimation } from "motion/react";
 import * as m from "motion/react-m";
 import { FluxLayout } from "@flux/shared-ui/components/flux-layout";
+import type { FluxLayoutState } from "@flux/shared-ui/hooks/use-flux-layout";
 import {
   FluxTab,
   FluxTabAddButton,
@@ -16,9 +17,13 @@ import { Toaster, toast } from "@flux/shared-ui/components/sonner";
 import type {
   FileEntry,
   FluxClient,
+  RecentVault,
   ServerStatus,
   TrashEntry,
+  VaultChange,
   VaultInfo,
+  VaultLocation,
+  VaultGraph,
 } from "@flux/bridge-contract";
 import {
   FluxEditorPane,
@@ -45,6 +50,7 @@ import {
 } from "./workspace-sidebars";
 import { GraphView } from "./graph-view";
 import { PdfExportDialog } from "./pdf-export";
+import { FilePreview } from "./file-preview";
 import {
   findWorkspaceLeaf,
   mapWorkspaceLeaves,
@@ -59,6 +65,14 @@ import {
   type WorkspaceNode,
 } from "./workspace-tree";
 import { createWorkspaceTab, type WorkspaceTab } from "./workspace-tabs";
+import {
+  browserStatePersistence,
+  useAppStore,
+  type FluxStatePersistence,
+  type IndexingProgress,
+  type PersistedWorkspaceSession,
+  type VaultLifecycleState,
+} from "./app-state";
 
 export interface FluxRuntime {
   label: string;
@@ -68,6 +82,9 @@ export interface FluxRuntime {
   getPerformanceStats?: () => Promise<FluxPerformanceStats | null>;
   openWindow?: (url: string) => Promise<void>;
   exportPdf?: (options: PdfExportOptions) => Promise<string | null>;
+  getWindowId?: () => Promise<string>;
+  statePersistence?: FluxStatePersistence;
+  vaultAccess?: "filesystem" | "registry";
 }
 
 export interface PdfExportOptions {
@@ -90,28 +107,6 @@ export interface FluxAppProps {
 
 const DOCUMENT_LIBRARY = [DEMO_DOCUMENT, ...REFERENCE_DOCUMENTS];
 const bootstrapStatus = new WeakMap<FluxClient, Promise<ServerStatus>>();
-const LAST_VAULT_PATH_KEY = "flux-last-vault-path";
-
-interface PersistedVaultSession {
-  tabs: Array<{ path: string; mode: WorkspaceTab["mode"]; pinned: boolean }>;
-  activePath?: string;
-}
-
-function sessionStorageKey(vaultId: string) {
-  return `flux-vault-session:${vaultId}`;
-}
-
-function readVaultSession(vaultId: string): PersistedVaultSession | null {
-  try {
-    const value = JSON.parse(localStorage.getItem(sessionStorageKey(vaultId)) ?? "null") as
-      | PersistedVaultSession
-      | null;
-    if (!value || !Array.isArray(value.tabs)) return null;
-    return value;
-  } catch {
-    return null;
-  }
-}
 
 function getBootstrapStatus(client: FluxClient) {
   let pending = bootstrapStatus.get(client);
@@ -123,6 +118,94 @@ function getBootstrapStatus(client: FluxClient) {
     bootstrapStatus.set(client, pending);
   }
   return pending;
+}
+
+interface IndexedVaultInfo extends VaultInfo {
+  indexing?: IndexingProgress;
+}
+
+function lifecycleFromVault(info: VaultInfo): VaultLifecycleState {
+  const state = info.state as string;
+  if (
+    state === "initializing" ||
+    state === "read_only_ready" ||
+    state === "writable" ||
+    state === "indexing" ||
+    state === "active" ||
+    state === "degraded"
+  ) {
+    return state;
+  }
+  return state === "ready" ? "active" : "degraded";
+}
+
+function restoreWorkspaceRoot(
+  node: WorkspaceNode | undefined,
+  tabIds: Set<number>
+): WorkspaceNode | null {
+  if (!node) return null;
+  if (node.kind === "leaf") {
+    const kept = node.tabIds.filter((id) => tabIds.has(id));
+    if (!kept.length) return null;
+    return {
+      ...node,
+      view: node.view === "pdf" ? "editor" : node.view,
+      tabIds: kept,
+      activeTabId: kept.includes(node.activeTabId) ? node.activeTabId : kept[0],
+    };
+  }
+  const first = restoreWorkspaceRoot(node.children[0], tabIds);
+  const second = restoreWorkspaceRoot(node.children[1], tabIds);
+  if (!first) return second;
+  if (!second) return first;
+  return { ...node, children: [first, second] };
+}
+
+function maxWorkspaceNodeId(node: WorkspaceNode): number {
+  return node.kind === "leaf"
+    ? node.id
+    : Math.max(node.id, maxWorkspaceNodeId(node.children[0]), maxWorkspaceNodeId(node.children[1]));
+}
+
+function InitializationOverlay({ label }: { label: string }) {
+  return (
+    <div className="fixed inset-0 z-[190] grid place-items-center bg-background/85 backdrop-blur-sm">
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex flex-col items-center gap-3 text-center"
+      >
+        <span
+          aria-hidden="true"
+          className="size-5 animate-spin rounded-full border-2 border-muted-foreground/25 border-t-foreground motion-reduce:animate-none"
+        />
+        <div>
+          <p className="text-sm font-medium">Preparing Flux</p>
+          <p className="mt-1 max-w-72 truncate text-xs text-muted-foreground">{label}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DegradedBanner({ onRebuild }: { onRebuild: () => void }) {
+  return (
+    <div
+      role="status"
+      className="absolute inset-x-3 top-12 z-40 flex items-center gap-3 rounded-lg border bg-popover/95 px-3 py-2 text-xs text-popover-foreground shadow-lg backdrop-blur [border-color:var(--layout-separator)]"
+    >
+      <span className="min-w-0 flex-1 truncate">
+        Vault services degraded. Notes remain editable.
+      </span>
+      <button
+        type="button"
+        onClick={onRebuild}
+        className="shrink-0 rounded-md border px-2 py-1 font-medium hover:bg-accent [border-color:var(--layout-separator)]"
+      >
+        Rebuild index
+      </button>
+    </div>
+  );
 }
 const PdfViewer = lazy(() =>
   import("./pdf-viewer").then((module) => ({ default: module.PdfViewer }))
@@ -142,6 +225,142 @@ function titleFromPath(path: string) {
 function fileTitleFromPath(path: string) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   return name.replace(/\.[^./]+$/, "");
+}
+
+function workspaceTabPath(tab: WorkspaceTab) {
+  return tab.document?.path ?? tab.pdf?.path ?? tab.preview?.path;
+}
+
+function EditorPathBreadcrumb({
+  path,
+  onReveal,
+  onRename,
+}: {
+  path: string;
+  onReveal: (path: string, file: boolean) => void;
+  onRename: (path: string, name: string) => void;
+}) {
+  const segments = path.split("/").filter(Boolean);
+  const fileName = segments.at(-1) ?? "";
+  const fileLabel = fileName.replace(/\.[^./]+$/, "");
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(fileLabel);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const cancelRenameRef = useRef(false);
+
+  useEffect(() => {
+    if (!renaming) return;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [renaming]);
+
+  const commitRename = () => {
+    if (cancelRenameRef.current) {
+      cancelRenameRef.current = false;
+      return;
+    }
+    setRenaming(false);
+    const next = draft.trim();
+    if (next && next !== fileLabel) onRename(path, next);
+    else setDraft(fileLabel);
+  };
+
+  return (
+    <nav
+      aria-label="File path"
+      title={path}
+      className="mx-auto flex min-w-0 max-w-full items-center justify-center gap-1.5 overflow-hidden"
+    >
+      {segments.map((segment, index) => {
+        const currentPath = segments.slice(0, index + 1).join("/");
+        const file = index === segments.length - 1;
+        return (
+          <span key={currentPath} className="flex min-w-0 items-center gap-1.5">
+            {index ? <span className="select-none text-muted-foreground/45">/</span> : null}
+            {file && renaming ? (
+              <input
+                ref={inputRef}
+                aria-label="Rename file"
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onBlur={commitRename}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                  if (event.key === "Escape") {
+                    cancelRenameRef.current = true;
+                    setDraft(fileLabel);
+                    setRenaming(false);
+                  }
+                }}
+                className="min-w-24 max-w-64 rounded-sm border bg-background px-1.5 py-0.5 text-center font-medium text-foreground outline-none focus:ring-1 focus:ring-ring [border-color:var(--layout-separator)]"
+              />
+            ) : (
+              <button
+                type="button"
+                aria-current={file ? "page" : undefined}
+                aria-label={file ? `Rename ${fileLabel}` : `Reveal ${segment}`}
+                onClick={() => {
+                  if (file) {
+                    setDraft(fileLabel);
+                    setRenaming(true);
+                  }
+                  else onReveal(currentPath, false);
+                }}
+                className={`min-w-0 truncate rounded-sm px-1.5 py-0.5 outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring ${
+                  file ? "font-medium text-foreground" : "text-muted-foreground"
+                }`}
+              >
+                {file ? fileLabel : segment}
+              </button>
+            )}
+          </span>
+        );
+      })}
+    </nav>
+  );
+}
+
+function mimeTypeForPath(path: string) {
+  const extension = path.toLocaleLowerCase().split(".").pop() ?? "";
+  const types: Record<string, string> = {
+    avif: "image/avif",
+    bmp: "image/bmp",
+    gif: "image/gif",
+    jpeg: "image/jpeg",
+    jpg: "image/jpeg",
+    png: "image/png",
+    svg: "image/svg+xml",
+    webp: "image/webp",
+    mp3: "audio/mpeg",
+    m4a: "audio/mp4",
+    "3gp": "audio/3gpp",
+    ogg: "audio/ogg",
+    oga: "audio/ogg",
+    opus: "audio/ogg",
+    wav: "audio/wav",
+    flac: "audio/flac",
+    mp4: "video/mp4",
+    mov: "video/quicktime",
+    webm: "video/webm",
+    ogv: "video/ogg",
+    mkv: "video/x-matroska",
+  };
+  return types[extension] ?? "application/octet-stream";
+}
+
+function decodedText(data: ArrayBuffer) {
+  try {
+    const content = new TextDecoder("utf-8", { fatal: true }).decode(data);
+    if (content.includes("\0")) return null;
+    const sample = content.slice(0, 8_192);
+    const readable = [...sample].filter(
+      (character) =>
+        character === "\n" || character === "\r" || character === "\t" || character >= " "
+    ).length;
+    return sample.length === 0 || readable / sample.length > 0.9 ? content : null;
+  } catch {
+    return null;
+  }
 }
 
 function markdownPath(parent: string, title: string) {
@@ -204,6 +423,13 @@ function runWithToast<T>(operation: Promise<T>, feedback: AsyncFeedback) {
 }
 
 export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
+  const lifecycle = useAppStore((state) => state.lifecycle);
+  const indexing = useAppStore((state) => state.indexing);
+  const hydrateAppState = useAppStore((state) => state.hydrate);
+  const setAppVault = useAppStore((state) => state.setVault);
+  const setLifecycle = useAppStore((state) => state.setLifecycle);
+  const setStoredWorkspace = useAppStore((state) => state.setWorkspace);
+  const statePersistence = runtime.statePersistence ?? browserStatePersistence;
   const [status, setStatus] = useState("Connecting…");
   const [performanceStats, setPerformanceStats] = useState<FluxPerformanceStats | null>(null);
   const [tabs, setTabs] = useState<WorkspaceTab[]>(() => [
@@ -214,8 +440,11 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   const [sessionVaultId, setSessionVaultId] = useState("");
   const [vault, setVault] = useState<VaultInfo | null>(null);
   const [fileEntries, setFileEntries] = useState<FileEntry[]>([]);
+  const [vaultGraph, setVaultGraph] = useState<VaultGraph | null>(null);
   const [vaultDocuments, setVaultDocuments] = useState<DemoDocument[]>([]);
   const [vaultPickerOpen, setVaultPickerOpen] = useState(false);
+  const [recentVaults, setRecentVaults] = useState<RecentVault[]>([]);
+  const [availableVaults, setAvailableVaults] = useState<VaultLocation[]>([]);
   const [renameRequest, setRenameRequest] = useState<{ path: string; value: string }>();
   const [trashOpen, setTrashOpen] = useState(false);
   const [trashEntries, setTrashEntries] = useState<TrashEntry[]>([]);
@@ -224,6 +453,8 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   const [pdfExportOpen, setPdfExportOpen] = useState(false);
   const [leftSidebarPane, setLeftSidebarPane] = useState<LeftPane>("files");
   const [rightSidebarPane, setRightSidebarPane] = useState<RightPane>("backlinks");
+  const [layoutState, setLayoutState] = useState<FluxLayoutState>();
+  const [expandedFolders, setExpandedFolders] = useState<string[]>([]);
   const [nextTabId, setNextTabId] = useState(2);
   const [workspaceRoot, setWorkspaceRoot] = useState<WorkspaceNode>({
     kind: "leaf",
@@ -234,10 +465,18 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   });
   const [activeLeafId, setActiveLeafId] = useState(1);
   const nextLeafIdRef = useRef(2);
+  const windowIdRef = useRef("main");
+  const sessionSaveTimerRef = useRef<number | undefined>(undefined);
+  const sessionSaveChainRef = useRef(Promise.resolve());
+  const latestSessionRef = useRef<PersistedWorkspaceSession | undefined>(undefined);
   const savedDocumentsRef = useRef(new Map<string, DemoDocument>());
+  const tabsRef = useRef(tabs);
+  const fileEntriesRef = useRef<FileEntry[]>([]);
   const vaultFileVersionsRef = useRef(new Map<string, string>());
   const saveTimersRef = useRef(new Map<string, number>());
   const saveChainsRef = useRef(new Map<string, Promise<void>>());
+  const indexingToastVaultRef = useRef<string | null>(null);
+  const lastIndexingProgressRef = useRef<IndexingProgress | null>(null);
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeLeaf = findWorkspaceLeaf(workspaceRoot, activeLeafId);
   const visibleActiveTab =
@@ -246,10 +485,31 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       : undefined;
   const documents = useMemo(() => {
     const library = vault ? vaultDocuments : DOCUMENT_LIBRARY;
-    const byTitle = new Map(library.map((document) => [document.title, document]));
-    for (const tab of tabs) if (tab.document) byTitle.set(tab.document.title, tab.document);
-    return [...byTitle.values()];
+    const byPath = new Map(library.map((document) => [document.path ?? document.title, document]));
+    for (const tab of tabs)
+      if (tab.document) byPath.set(tab.document.path ?? tab.document.title, tab.document);
+    return [...byPath.values()];
   }, [tabs, vault, vaultDocuments]);
+  const selectableVaults = useMemo(() => {
+    const byPath = new Map<string, { key: string; name: string; path: string }>();
+    for (const location of availableVaults) {
+      byPath.set(location.path, {
+        key: location.vaultId || location.path,
+        name: location.name,
+        path: location.path,
+      });
+    }
+    for (const recent of recentVaults) {
+      if (!byPath.has(recent.path)) {
+        byPath.set(recent.path, {
+          key: recent.vaultId,
+          name: recent.displayName,
+          path: recent.path,
+        });
+      }
+    }
+    return [...byPath.values()];
+  }, [availableVaults, recentVaults]);
   const leftEdgeLeafIds = useMemo(
     () => new Set(workspaceEdgeLeafIds(workspaceRoot, "left")),
     [workspaceRoot]
@@ -258,6 +518,63 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     () => new Set(workspaceEdgeLeafIds(workspaceRoot, "right")),
     [workspaceRoot]
   );
+
+  useEffect(() => {
+    tabsRef.current = tabs;
+  }, [tabs]);
+
+  useEffect(() => {
+    const toastId = "vault-indexing-progress";
+    if (!vault) {
+      if (indexingToastVaultRef.current) toast.dismiss(toastId);
+      indexingToastVaultRef.current = null;
+      lastIndexingProgressRef.current = null;
+      return;
+    }
+    if (indexingToastVaultRef.current && indexingToastVaultRef.current !== vault.id) {
+      toast.dismiss(toastId);
+      indexingToastVaultRef.current = null;
+      lastIndexingProgressRef.current = null;
+    }
+    if (lifecycle === "indexing" && indexing) {
+      const total = Math.max(0, indexing.total);
+      const processed = total
+        ? Math.min(Math.max(0, indexing.processed), total)
+        : Math.max(0, indexing.processed);
+      const percent = total ? Math.round((processed / total) * 100) : 0;
+      const progress = total
+        ? `${processed.toLocaleString()} / ${total.toLocaleString()} files · ${percent}%`
+        : "Scanning files…";
+      const failures = indexing.failed ? ` · ${indexing.failed} failed` : "";
+      indexingToastVaultRef.current = vault.id;
+      lastIndexingProgressRef.current = indexing;
+      toast.loading(`Indexing ${vault.name}`, {
+        id: toastId,
+        description: `${progress}${failures} · Search and backlinks may be incomplete.`,
+        duration: Infinity,
+      });
+      return;
+    }
+    if (indexingToastVaultRef.current !== vault.id) return;
+    const finalProgress = lastIndexingProgressRef.current;
+    indexingToastVaultRef.current = null;
+    lastIndexingProgressRef.current = null;
+    if (lifecycle === "active") {
+      toast.success(`${vault.name} indexed`, {
+        id: toastId,
+        description: finalProgress?.total
+          ? `${finalProgress.total.toLocaleString()} files are ready.`
+          : "Search, backlinks, and graph are ready.",
+        duration: 4_000,
+      });
+    } else if (lifecycle === "degraded") {
+      toast.error(`Indexing ${vault.name} needs attention`, {
+        id: toastId,
+        description: "Editing remains available. Rebuild the index from the warning banner.",
+        duration: 8_000,
+      });
+    }
+  }, [indexing, lifecycle, vault]);
 
   useEffect(() => {
     if (!runtime.getPerformanceStats) return;
@@ -369,7 +686,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
 
     const leaves = workspaceLeaves(workspaceRoot);
     if (leaves.length === 1 && leaf.tabIds.length === 1) {
-      if (!tab.document) return;
+      if (!tab.document && !tab.pdf && !tab.preview) return;
       const replacement = createWorkspaceTab(nextTabId);
       setNextTabId((current) => current + 1);
       setTabs((current) => [...current.filter((candidate) => candidate.id !== tabId), replacement]);
@@ -423,12 +740,21 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   const refreshFiles = async (vaultId = vault?.id) => {
     if (!runtime.client || !vaultId) return [];
     const entries = await runtime.client.listFiles(vaultId);
+    fileEntriesRef.current = entries;
     setFileEntries(entries);
     return entries;
   };
 
+  const refreshVaultGraph = async (vaultId = vault?.id) => {
+    if (!runtime.client || !vaultId) return null;
+    const graph = await runtime.client.getGraph(vaultId);
+    setVaultGraph(graph);
+    return graph;
+  };
+
   const refreshVaultDocuments = async (vaultId: string, entries: FileEntry[]) => {
     if (!runtime.client) return [];
+    const previousDocuments = new Map(savedDocumentsRef.current);
     const markdownEntries = entries.filter(
       (entry) =>
         (entry.kind === "markdown" || entry.kind === "text") &&
@@ -455,121 +781,265 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     for (const path of vaultFileVersionsRef.current.keys()) {
       if (!visiblePaths.has(path)) vaultFileVersionsRef.current.delete(path);
     }
+    const resolved = [...loaded];
+    const cleanUpdates = new Map<string, DemoDocument>();
     for (let index = 0; index < loaded.length; index += 1) {
       const document = loaded[index];
       const entry = markdownEntries[index];
       if (document?.path && entry) {
+        const previous = previousDocuments.get(document.path);
+        const locallyEdited = Boolean(
+          previous &&
+          tabsRef.current.some(
+            (tab) =>
+              tab.document?.path === document.path && tab.document?.content !== previous.content
+          )
+        );
+        if (locallyEdited && previous && document.contentHash !== previous.contentHash) {
+          resolved[index] = previous;
+          continue;
+        }
         savedDocumentsRef.current.set(document.path, document);
         vaultFileVersionsRef.current.set(entry.path, `${entry.modifiedAt}:${entry.sizeBytes}`);
+        if (document.contentHash !== previous?.contentHash)
+          cleanUpdates.set(document.path, document);
       }
     }
-    setVaultDocuments(loaded);
-    return loaded;
+    if (cleanUpdates.size) {
+      setTabs((current) =>
+        current.map((tab) => {
+          const document = tab.document?.path ? cleanUpdates.get(tab.document.path) : undefined;
+          return document ? { ...tab, title: document.title, document } : tab;
+        })
+      );
+    }
+    setVaultDocuments(resolved);
+    return resolved;
   };
 
   const loadVault = async (info: VaultInfo) => {
     if (!runtime.client) return;
     setStatus(`Opening ${info.name}…`);
+    setAppVault(info, "initializing", null);
     setSessionVaultId("");
     setVault(info);
     setActiveVaultId(info.id);
     setVaultDocuments([]);
+    setVaultGraph(null);
+    setExpandedFolders([]);
+    setLayoutState(undefined);
     savedDocumentsRef.current.clear();
     vaultFileVersionsRef.current.clear();
     const entries = await refreshFiles(info.id);
-    const persisted = readVaultSession(info.id);
+    void refreshVaultGraph(info.id).catch(() => undefined);
+    const persisted = await statePersistence.loadWorkspaceSession(windowIdRef.current, info.id);
     const entryByPath = new Map(entries.map((entry) => [entry.path, entry]));
-    const requestedTabs =
-      persisted?.tabs.filter(({ path }) => {
-        const entry = entryByPath.get(path);
-        return entry?.kind === "markdown" || entry?.kind === "text";
-      }) ?? [];
-    const loaded = await Promise.all(
-      requestedTabs.map(async ({ path, mode, pinned }, index) => {
-        const file = await runtime.client!.readFile(info.id, path);
-        const document: DemoDocument = {
-          title: titleFromPath(file.path),
-          path: file.path,
-          content: file.content,
-          contentHash: file.contentHash,
-        };
-        const entry = entryByPath.get(path);
-        savedDocumentsRef.current.set(path, document);
-        if (entry) vaultFileVersionsRef.current.set(path, `${entry.modifiedAt}:${entry.sizeBytes}`);
-        return { ...createWorkspaceTab(index + 1, document), mode, pinned };
+    const requestedTabs = persisted?.tabs ?? [];
+    const restored = await Promise.all(
+      requestedTabs.map(async ({ id, path, mode, pinned }, index) => {
+        try {
+          const entry = entryByPath.get(path);
+          // Workspace state may outlive a format-policy change or an external delete.
+          // Only restore files that are still part of the Obsidian-compatible vault view.
+          if (!entry || entry.kind === "directory") return null;
+          if (entry?.kind === "binary") {
+            const data = await runtime.client!.readBinaryFile(info.id, path);
+            if (/\.pdf$/i.test(path)) {
+              return {
+                ...createWorkspaceTab(id || index + 1),
+                title: fileTitleFromPath(path),
+                pdf: { path, data },
+                mode,
+                pinned,
+              };
+            }
+            const mimeType = mimeTypeForPath(path);
+            if (/^(image|audio|video)\//.test(mimeType) || decodedText(data) === null) {
+              return {
+                ...createWorkspaceTab(id || index + 1),
+                title: fileTitleFromPath(path),
+                preview: { path, data, mimeType },
+                mode,
+                pinned,
+              };
+            }
+          }
+          const file = await runtime.client!.readFile(info.id, path);
+          const document: DemoDocument = {
+            title: titleFromPath(file.path),
+            path: file.path,
+            content: file.content,
+            contentHash: file.contentHash,
+          };
+          savedDocumentsRef.current.set(path, document);
+          if (entry)
+            vaultFileVersionsRef.current.set(path, `${entry.modifiedAt}:${entry.sizeBytes}`);
+          return { ...createWorkspaceTab(id || index + 1, document), mode, pinned };
+        } catch {
+          return null;
+        }
       })
     );
+    const loaded = restored.flatMap((tab) => (tab ? [tab] : []));
     setVaultDocuments(loaded.flatMap((tab) => (tab.document ? [tab.document] : [])));
     if (!loaded.length) {
       replaceWorkspaceDocument(null);
     } else {
       const active =
-        loaded.find((tab) => tab.document?.path === persisted?.activePath) ?? loaded[0];
+        loaded.find(
+          (tab) =>
+            (tab.document?.path ?? tab.pdf?.path ?? tab.preview?.path) === persisted?.activePath
+        ) ?? loaded[0];
       const tabIds = loaded.map((tab) => tab.id);
-      setTabs(loaded);
-      setActiveTabId(active.id);
-      setNextTabId(loaded.length + 1);
-      setWorkspaceRoot({
+      const restoredRoot = restoreWorkspaceRoot(persisted?.workspaceRoot, new Set(tabIds));
+      const nextRoot: WorkspaceNode = restoredRoot ?? {
         kind: "leaf",
         id: 1,
         view: "editor",
         tabIds,
         activeTabId: active.id,
-      });
-      setActiveLeafId(1);
+      };
+      setTabs(loaded);
+      setActiveTabId(active.id);
+      setNextTabId(Math.max(...tabIds) + 1);
+      setWorkspaceRoot(nextRoot);
+      const restoredActiveLeaf = persisted?.activeLeafId
+        ? findWorkspaceLeaf(nextRoot, persisted.activeLeafId)
+        : null;
+      setActiveLeafId(restoredActiveLeaf?.id ?? workspaceLeaves(nextRoot)[0].id);
+      nextLeafIdRef.current = maxWorkspaceNodeId(nextRoot) + 1;
     }
+    if (persisted?.leftSidebarPane) setLeftSidebarPane(persisted.leftSidebarPane);
+    if (persisted?.rightSidebarPane) setRightSidebarPane(persisted.rightSidebarPane);
+    if (persisted?.layout) setLayoutState(persisted.layout);
+    if (persisted?.expandedFolders) setExpandedFolders(persisted.expandedFolders);
     setSessionVaultId(info.id);
     setVaultPickerOpen(false);
     setStatus(`Go backend connected · ${info.name}`);
+    const nextIndexing = (info as IndexedVaultInfo).indexing ?? null;
+    setLifecycle(nextIndexing ? "indexing" : lifecycleFromVault(info), nextIndexing);
   };
 
   useEffect(() => {
     if (!vault || sessionVaultId !== vault.id) return;
-    const persisted: PersistedVaultSession = {
+    const persisted: PersistedWorkspaceSession = {
+      version: 1,
+      vaultId: vault.id,
       tabs: tabs.flatMap((tab) =>
-        tab.document?.path
-          ? [{ path: tab.document.path, mode: tab.mode, pinned: Boolean(tab.pinned) }]
+        tab.document?.path || tab.pdf?.path || tab.preview?.path
+          ? [
+              {
+                id: tab.id,
+                path: tab.document?.path ?? tab.pdf?.path ?? tab.preview!.path,
+                mode: tab.mode,
+                pinned: Boolean(tab.pinned),
+              },
+            ]
           : []
       ),
-      activePath: tabs.find((tab) => tab.id === activeTabId)?.document?.path,
+      activePath: (() => {
+        const tab = tabs.find((candidate) => candidate.id === activeTabId);
+        return tab?.document?.path ?? tab?.pdf?.path ?? tab?.preview?.path;
+      })(),
+      workspaceRoot,
+      activeLeafId,
+      leftSidebarPane,
+      rightSidebarPane,
+      layout: layoutState,
+      expandedFolders,
     };
-    localStorage.setItem(sessionStorageKey(vault.id), JSON.stringify(persisted));
-  }, [activeTabId, sessionVaultId, tabs, vault]);
+    latestSessionRef.current = persisted;
+    setStoredWorkspace(persisted);
+    window.clearTimeout(sessionSaveTimerRef.current);
+    sessionSaveTimerRef.current = window.setTimeout(() => {
+      sessionSaveChainRef.current = sessionSaveChainRef.current
+        .catch(() => undefined)
+        .then(() => statePersistence.saveWorkspaceSession(windowIdRef.current, persisted))
+        .catch(() => undefined);
+    }, 250);
+    return () => window.clearTimeout(sessionSaveTimerRef.current);
+  }, [
+    activeLeafId,
+    activeTabId,
+    leftSidebarPane,
+    layoutState,
+    expandedFolders,
+    rightSidebarPane,
+    sessionVaultId,
+    setStoredWorkspace,
+    statePersistence,
+    tabs,
+    vault,
+    workspaceRoot,
+  ]);
+
+  useEffect(() => {
+    const flushSession = () => {
+      const persisted = latestSessionRef.current;
+      if (!persisted) return;
+      window.clearTimeout(sessionSaveTimerRef.current);
+      sessionSaveChainRef.current = sessionSaveChainRef.current
+        .catch(() => undefined)
+        .then(() => statePersistence.saveWorkspaceSession(windowIdRef.current, persisted))
+        .catch(() => undefined);
+    };
+    window.addEventListener("pagehide", flushSession);
+    return () => window.removeEventListener("pagehide", flushSession);
+  }, [statePersistence]);
 
   useEffect(() => {
     if (!runtime.client || !vault) return;
     let active = true;
-    let knownRevision: number | undefined;
-    let refreshing = false;
-    let pendingRefresh = false;
+    let applying = Promise.resolve();
     const reconcile = async () => {
-      if (refreshing) {
-        pendingRefresh = true;
+      const entries = await runtime.client!.listFiles(vault.id);
+      if (!active) return;
+      fileEntriesRef.current = entries;
+      setFileEntries(entries);
+      await Promise.all([refreshVaultDocuments(vault.id, entries), refreshVaultGraph(vault.id)]);
+    };
+
+    const applyChange = async (change: VaultChange) => {
+      const nextProgress = change.vault.indexing ?? null;
+      setLifecycle(nextProgress ? "indexing" : lifecycleFromVault(change.vault), nextProgress);
+      const events = change.events ?? [];
+      if (change.reconcile || events.some((event) => event.op === "reconcile")) {
+        await reconcile();
         return;
       }
-      refreshing = true;
-      try {
-        do {
-          pendingRefresh = false;
-          const entries = await refreshFiles(vault.id);
-          if (active) await refreshVaultDocuments(vault.id, entries);
-        } while (active && pendingRefresh);
-      } finally {
-        refreshing = false;
-      }
-    };
-    const stop = runtime.client.watchVaultRevision(
-      vault.id,
-      (revision) => {
-        if (!active) return;
-        if (knownRevision === undefined) {
-          knownRevision = revision;
+      if (!events.length) return;
+
+      const byPath = new Map(fileEntriesRef.current.map((entry) => [entry.path, entry]));
+      for (const event of events) {
+        if (!event.path) continue;
+        if (event.op === "remove") {
+          for (const path of byPath.keys()) {
+            if (path === event.path || path.startsWith(`${event.path}/`)) byPath.delete(path);
+          }
+          continue;
+        }
+        const entry = await runtime.client!.getFileMetadata(vault.id, event.path);
+        if (entry?.kind === "directory" && event.op === "create") {
+          await reconcile();
           return;
         }
-        if (revision !== knownRevision) {
-          knownRevision = revision;
-          void reconcile();
-        }
+        if (entry) byPath.set(entry.path, entry);
+        else byPath.delete(event.path);
+      }
+      if (!active) return;
+      const entries = [...byPath.values()].sort((left, right) =>
+        left.path.localeCompare(right.path)
+      );
+      fileEntriesRef.current = entries;
+      setFileEntries(entries);
+      await Promise.all([refreshVaultDocuments(vault.id, entries), refreshVaultGraph(vault.id)]);
+    };
+
+    const stop = runtime.client.watchVaultChanges(
+      vault.id,
+      (change) => {
+        if (!active) return;
+        applying = applying.then(() => applyChange(change)).catch(() => reconcile());
       },
       () => {
         // Browser EventSource and the desktop bridge reconnect automatically.
@@ -583,10 +1053,46 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runtime.client, vault?.id]);
 
+  useEffect(() => {
+    if (!runtime.client || !vault) return;
+    let active = true;
+    let timer: number | undefined;
+
+    const refreshLifecycle = async () => {
+      try {
+        const server = await runtime.client!.getStatus();
+        if (!active || server.openVault?.id !== vault.id) return;
+        const info = server.openVault as IndexedVaultInfo;
+        const nextLifecycle = info.indexing ? "indexing" : lifecycleFromVault(info);
+        setLifecycle(nextLifecycle, info.indexing ?? null);
+        if (
+          nextLifecycle === "initializing" ||
+          nextLifecycle === "read_only_ready" ||
+          nextLifecycle === "writable" ||
+          nextLifecycle === "indexing"
+        ) {
+          timer = window.setTimeout(() => void refreshLifecycle(), 500);
+        }
+      } catch {
+        if (active) timer = window.setTimeout(() => void refreshLifecycle(), 1_500);
+      }
+    };
+
+    if (lifecycle !== "active" && lifecycle !== "degraded") void refreshLifecycle();
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [lifecycle, runtime.client, setLifecycle, vault]);
+
   const chooseVault = async (mode: "open" | "create") => {
     if (!runtime.client || !runtime.selectVaultDirectory) return;
     const path = await runtime.selectVaultDirectory(mode);
     if (!path) return;
+    const previousLifecycle = lifecycle;
+    const previousProgress = indexing;
+    setLifecycle("initializing", null);
+    setStatus(mode === "create" ? "Creating vault…" : "Initializing vault…");
     try {
       await runWithToast(
         (async () => {
@@ -595,7 +1101,15 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
               ? await runtime.client!.createVault({ path })
               : await runtime.client!.openVault({ path });
           await loadVault(info);
-          localStorage.setItem(LAST_VAULT_PATH_KEY, path);
+          if (runtime.vaultAccess !== "registry") {
+            await statePersistence.rememberVault({ id: info.id, name: info.name, path });
+          }
+          const [recent, available] = await Promise.all([
+            runtime.client!.listRecentVaults(),
+            runtime.client!.listAvailableVaults(),
+          ]);
+          setRecentVaults(recent);
+          setAvailableVaults(available);
         })(),
         {
           loading: mode === "create" ? "Creating vault…" : "Opening vault…",
@@ -604,7 +1118,56 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
         }
       );
     } catch (error) {
+      setLifecycle(previousLifecycle, previousProgress);
       setStatus(error instanceof Error ? error.message : "Vault operation failed");
+    }
+  };
+
+  const openRegisteredVault = async (registered: { name: string; path: string }) => {
+    if (!runtime.client) return;
+    const previousLifecycle = lifecycle;
+    const previousProgress = indexing;
+    setLifecycle("initializing", null);
+    setStatus(`Initializing ${registered.name}…`);
+    try {
+      await runWithToast(
+        (async () => {
+          const info = await runtime.client!.openVault({ path: registered.path });
+          await loadVault(info);
+          if (runtime.vaultAccess !== "registry") {
+            await statePersistence.rememberVault({
+              id: info.id,
+              name: info.name,
+              path: registered.path,
+            });
+          }
+          const [recent, available] = await Promise.all([
+            runtime.client!.listRecentVaults(),
+            runtime.client!.listAvailableVaults(),
+          ]);
+          setRecentVaults(recent);
+          setAvailableVaults(available);
+        })(),
+        {
+          loading: `Opening ${registered.name}…`,
+          success: "Vault opened",
+          error: "Could not open vault",
+        }
+      );
+    } catch (error) {
+      setLifecycle(previousLifecycle, previousProgress);
+      setStatus(error instanceof Error ? error.message : "Vault operation failed");
+    }
+  };
+
+  const rebuildIndex = async () => {
+    if (!runtime.client || !vault) return;
+    try {
+      await runtime.client.rebuildIndex(vault.id);
+      setLifecycle("indexing", { phase: "scanning", processed: 0, total: 0, failed: 0 });
+      toast.success("Index rebuild started");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not rebuild index");
     }
   };
 
@@ -683,6 +1246,16 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
               return path === tab.pdf.path
                 ? tab
                 : { ...tab, title: fileTitleFromPath(path), pdf: { ...tab.pdf, path } };
+            }
+            if (tab.preview) {
+              const path = movedDocumentPath(tab.preview.path, sourcePath, destinationPath);
+              return path === tab.preview.path
+                ? tab
+                : {
+                    ...tab,
+                    title: fileTitleFromPath(path),
+                    preview: { ...tab.preview, path, mimeType: mimeTypeForPath(path) },
+                  };
             }
             if (!tab.document?.path) return tab;
             const path = movedDocumentPath(tab.document.path, sourcePath, destinationPath);
@@ -781,11 +1354,12 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             if (timer) window.clearTimeout(timer);
             savedDocumentsRef.current.delete(document.path);
           }
-          const activePath = activeTab?.document?.path ?? activeTab?.pdf?.path;
+          const activePath =
+            activeTab?.document?.path ?? activeTab?.pdf?.path ?? activeTab?.preview?.path;
           const activeWasDeleted = activePath === path || activePath?.startsWith(`${path}/`);
           setTabs((current) =>
             current.filter((tab) => {
-              const candidate = tab.document?.path ?? tab.pdf?.path;
+              const candidate = tab.document?.path ?? tab.pdf?.path ?? tab.preview?.path;
               return !candidate || (candidate !== path && !candidate.startsWith(`${path}/`));
             })
           );
@@ -995,9 +1569,23 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     return (
       !tab.document &&
       !tab.pdf &&
+      !tab.preview &&
       workspaceLeaves(workspaceRoot).length === 1 &&
       leaf?.tabIds.length === 1
     );
+  };
+
+  const revealEditorPath = (path: string, file: boolean) => {
+    const folder = file && path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : path;
+    const parts = folder.split("/").filter(Boolean);
+    setExpandedFolders((current) => {
+      const next = new Set(current);
+      for (let index = 0; index < parts.length; index++) {
+        next.add(parts.slice(0, index + 1).join("/"));
+      }
+      return [...next].sort();
+    });
+    setLeftSidebarPane("files");
   };
 
   const commandsFor = (tab: WorkspaceTab, leafId = activeLeafId): FluxTabCommands => {
@@ -1113,7 +1701,18 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
 
   const paneFor = (tab: WorkspaceTab, leafId = activeLeafId) => (
     <FluxEditorPane
-      title={tab.title}
+      title={
+        workspaceTabPath(tab) ? (
+          <EditorPathBreadcrumb
+            key={workspaceTabPath(tab)!}
+            path={workspaceTabPath(tab)!}
+            onReveal={revealEditorPath}
+            onRename={renamePath}
+          />
+        ) : (
+          tab.title
+        )
+      }
       headerAction={
         tab.document ? (
           <MarkdownViewToggle
@@ -1174,6 +1773,14 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
         >
           <PdfViewer key={tab.pdf.path} title={tab.title} data={tab.pdf.data} />
         </Suspense>
+      ) : tab.preview ? (
+        <FilePreview
+          key={tab.preview.path}
+          title={tab.title}
+          path={tab.preview.path}
+          data={tab.preview.data}
+          mimeType={tab.preview.mimeType}
+        />
       ) : tab.document ? (
         editorFor(tab)
       ) : (
@@ -1209,7 +1816,9 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   );
 
   const backlinksCount = visibleActiveTab?.document
-    ? (buildLinkIndex(documents).backlinks.get(visibleActiveTab.document.title)?.size ?? 0)
+    ? (buildLinkIndex(documents).backlinks.get(
+        visibleActiveTab.document.path ?? visibleActiveTab.document.title
+      )?.size ?? 0)
     : 0;
 
   const openDocument = async (identifier: string) => {
@@ -1227,7 +1836,9 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       : undefined;
     const existing = tabs.find((tab) =>
       requestedPath
-        ? tab.document?.path === requestedPath || tab.pdf?.path === requestedPath
+        ? tab.document?.path === requestedPath ||
+          tab.pdf?.path === requestedPath ||
+          tab.preview?.path === requestedPath
         : tab.document?.title === identifier
     );
     if (existing) {
@@ -1248,7 +1859,12 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       const emptyTab =
         leaf?.tabIds.length === 1
           ? tabs.find(
-              (tab) => tab.id === leaf.activeTabId && !tab.document && !tab.pdf && !tab.pinned
+              (tab) =>
+                tab.id === leaf.activeTabId &&
+                !tab.document &&
+                !tab.pdf &&
+                !tab.preview &&
+                !tab.pinned
             )
           : undefined;
       if (emptyTab) {
@@ -1279,10 +1895,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     };
 
     if (requestedEntry?.kind === "binary") {
-      if (!/\.pdf$/i.test(requestedEntry.path) || !runtime.client || !vault) {
-        toast.info(`Preview unavailable for ${requestedEntry.name}`);
-        return;
-      }
+      if (!runtime.client || !vault) return;
       try {
         const data = await runWithToast(
           runtime.client.readBinaryFile(vault.id, requestedEntry.path),
@@ -1292,13 +1905,39 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             error: `Could not open ${requestedEntry.name}`,
           }
         );
+        if (/\.pdf$/i.test(requestedEntry.path)) {
+          placeTab((id) => ({
+            ...createWorkspaceTab(id),
+            title: fileTitleFromPath(requestedEntry.path),
+            pdf: { path: requestedEntry.path, data },
+          }));
+          return;
+        }
+        const mimeType = mimeTypeForPath(requestedEntry.path);
+        const text = decodedText(data);
+        if (!/^(image|audio|video)\//.test(mimeType) && text !== null) {
+          const file = await runtime.client.readFile(vault.id, requestedEntry.path);
+          const document: DemoDocument = {
+            title: titleFromPath(file.path),
+            path: file.path,
+            content: file.content,
+            contentHash: file.contentHash,
+          };
+          savedDocumentsRef.current.set(file.path, document);
+          setVaultDocuments((current) => [
+            ...current.filter((item) => item.path !== file.path),
+            document,
+          ]);
+          placeTab((id) => createWorkspaceTab(id, document));
+          return;
+        }
         placeTab((id) => ({
           ...createWorkspaceTab(id),
           title: fileTitleFromPath(requestedEntry.path),
-          pdf: { path: requestedEntry.path, data },
+          preview: { path: requestedEntry.path, data, mimeType },
         }));
       } catch (error) {
-        setStatus(error instanceof Error ? error.message : "Open PDF failed");
+        setStatus(error instanceof Error ? error.message : "Open file failed");
       }
       return;
     }
@@ -1409,21 +2048,35 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     let active = true;
     const connect = async () => {
       try {
+        windowIdRef.current = (await runtime.getWindowId?.()) || "main";
+        const [appBootstrap, settings] = await Promise.all([
+          statePersistence.loadBootstrap(windowIdRef.current),
+          statePersistence.loadAppSettings(),
+        ]);
+        if (!active) return;
+        hydrateAppState(settings);
         if (runtime.client) {
+          const [recent, available] = await Promise.all([
+            runtime.client.listRecentVaults(),
+            runtime.client.listAvailableVaults(),
+          ]);
+          setRecentVaults(recent);
+          setAvailableVaults(available);
           const server = await getBootstrapStatus(runtime.client);
           if (!active) return;
           if (server.openVault) {
             await loadVault(server.openVault);
           } else {
-            const lastPath = localStorage.getItem(LAST_VAULT_PATH_KEY);
+            const lastPath = appBootstrap.lastVaultPath;
             if (lastPath) {
               try {
                 await loadVault(await runtime.client.openVault({ path: lastPath }));
                 return;
               } catch {
-                localStorage.removeItem(LAST_VAULT_PATH_KEY);
+                await statePersistence.forgetLastVault();
               }
             }
+            setAppVault(null, "active", null);
             setStatus("Go backend connected · no vault open");
             setVaultPickerOpen(true);
           }
@@ -1432,7 +2085,10 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
           if (active) setStatus(message);
         }
       } catch (error) {
-        if (active) setStatus(error instanceof Error ? error.message : "Runtime unavailable");
+        if (active) {
+          setLifecycle("degraded", null);
+          setStatus(error instanceof Error ? error.message : "Runtime unavailable");
+        }
       }
     };
     void connect();
@@ -1603,7 +2259,12 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
           ) : leaf.view === "graph" ? (
             <GraphView
               documents={documents}
-              attachments={fileEntries}
+              vaultGraph={vaultGraph}
+              activePath={
+                leafActiveTab?.document?.path ??
+                leafActiveTab?.pdf?.path ??
+                leafActiveTab?.preview?.path
+              }
               bookmarked={leafActiveTab?.bookmarked ?? false}
               onBookmarkChange={(bookmarked) => {
                 if (leafActiveTab) {
@@ -1656,6 +2317,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       <MotionConfig reducedMotion="user">
         <TooltipProvider delayDuration={500} skipDelayDuration={150}>
           <FluxLayout
+            key={sessionVaultId || "initial"}
             windowControlsInset={windowControlsInset}
             mainExtendsIntoTitlebar
             leftSidebarHeader={
@@ -1681,7 +2343,11 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             leftSidebar={
               <WorkspaceLeftSidebar
                 activeTitle={visibleActiveTab?.title ?? ""}
-                activePath={visibleActiveTab?.document?.path ?? visibleActiveTab?.pdf?.path}
+                activePath={
+                  visibleActiveTab?.document?.path ??
+                  visibleActiveTab?.pdf?.path ??
+                  visibleActiveTab?.preview?.path
+                }
                 pane={leftSidebarPane}
                 documents={documents}
                 onOpenDocument={(path) => void openDocument(path)}
@@ -1698,9 +2364,18 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
                   if (!runtime.client || !vault) return null;
                   return (await runtime.client.readFile(vault.id, path)).content;
                 }}
+                expandedFolders={expandedFolders}
+                onExpandedFoldersChange={setExpandedFolders}
               />
             }
-            main={<WorkspaceTree node={workspaceRoot} renderLeaf={renderWorkspaceLeaf} />}
+            main={
+              <div className="relative h-full min-h-0 min-w-0">
+                {lifecycle === "degraded" ? (
+                  <DegradedBanner onRebuild={() => void rebuildIndex()} />
+                ) : null}
+                <WorkspaceTree node={workspaceRoot} renderLeaf={renderWorkspaceLeaf} />
+              </div>
+            }
             rightSidebar={
               <WorkspaceRightSidebar
                 pane={rightSidebarPane}
@@ -1715,9 +2390,18 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
               <FluxStatusBar
                 activeVaultId={activeVaultId}
                 vaults={
-                  vault ? [{ id: vault.id, label: vault.name }] : [{ id: "", label: "No vault" }]
+                  selectableVaults.length
+                    ? selectableVaults.map((candidate) => ({
+                        id: candidate.key,
+                        label: candidate.name,
+                      }))
+                    : [{ id: "", label: "No vault" }]
                 }
-                onVaultChange={setActiveVaultId}
+                onVaultChange={(id) => {
+                  if (id === activeVaultId) return;
+                  const candidate = selectableVaults.find((item) => item.key === id);
+                  if (candidate) void openRegisteredVault(candidate);
+                }}
                 onManageVaults={() => setVaultPickerOpen(true)}
                 version="FLUX 0.0.1"
                 updateStatus="Up to date"
@@ -1738,80 +2422,142 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             }
             leftSidebarOptions={{ defaultWidth: 260, minWidth: 200, maxWidth: 480 }}
             rightSidebarOptions={{ defaultWidth: 280, minWidth: 220, maxWidth: 480 }}
-            storageKey="flux-app-layout"
+            storageKey={false}
+            layoutState={layoutState}
+            onLayoutChange={setLayoutState}
           />
+          {lifecycle === "initializing" ? <InitializationOverlay label={status} /> : null}
           {vaultPickerOpen ? (
-            <div className="fixed inset-0 z-[180] grid place-items-center bg-black/45 p-4">
-              <div className="w-full max-w-sm rounded-xl border bg-popover p-5 text-popover-foreground shadow-2xl [border-color:var(--layout-separator)]">
-                <h2 className="text-base font-semibold">Choose a vault</h2>
-                <p className="mt-2 text-sm leading-5 text-muted-foreground">
-                  Open any notes folder, Obsidian vault, Git repository, or empty directory. FLUX
-                  stores derived state inside that vault’s hidden .flux folder.
-                </p>
-                <div className="mt-5 flex flex-col gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void chooseVault("open")}
-                    className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground"
+            <div className="fixed inset-0 z-[180] grid place-items-center bg-black/50 p-4 backdrop-blur-[2px]">
+              <div className="grid max-h-[min(42rem,calc(100vh-2rem))] w-full max-w-3xl overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-2xl [border-color:var(--layout-separator)] md:grid-cols-[minmax(0,0.9fr)_minmax(20rem,1.1fr)]">
+                <div className="min-h-0 border-b bg-muted/20 p-4 md:border-b-0 md:border-r [border-color:var(--layout-separator)]">
+                  <p className="px-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                    Vaults
+                  </p>
+                  <div
+                    className="mt-3 max-h-[24rem] space-y-1 overflow-y-auto"
+                    role="list"
+                    aria-label="Recent vaults"
                   >
-                    Open existing vault…
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void chooseVault("create")}
-                    className="rounded-md border px-3 py-2 text-sm hover:bg-accent [border-color:var(--layout-separator)]"
-                  >
-                    Create new vault…
-                  </button>
-                  {vault ? (
+                    {selectableVaults.map((registered) => {
+                      const selected = activeVaultId === registered.key;
+                      return (
+                        <button
+                          key={registered.key}
+                          type="button"
+                          role="listitem"
+                          title={registered.path}
+                          onClick={() => void openRegisteredVault(registered)}
+                          className={`w-full rounded-md px-3 py-2.5 text-left outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring ${
+                            selected ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"
+                          }`}
+                        >
+                          <span className="flex items-center gap-2">
+                            <span
+                              className={`size-1.5 rounded-full ${selected ? "bg-primary" : "bg-muted-foreground/35"}`}
+                            />
+                            <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                              {registered.name}
+                            </span>
+                            {selected ? (
+                              <span className="text-[10px] text-muted-foreground">Open</span>
+                            ) : null}
+                          </span>
+                          <span className="mt-1 block truncate pl-3.5 font-mono text-[10px] text-muted-foreground">
+                            {registered.path}
+                          </span>
+                        </button>
+                      );
+                    })}
+                    {!selectableVaults.length ? (
+                      <p className="rounded-md border border-dashed px-3 py-4 text-xs leading-5 text-muted-foreground [border-color:var(--layout-separator)]">
+                        Open a folder once and it will remain available here.
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="flex flex-col justify-between p-6">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                      Manage vaults
+                    </p>
+                    <h2 className="mt-2 text-lg font-semibold tracking-tight">
+                      Choose where to work
+                    </h2>
+                    <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                      {runtime.vaultAccess === "registry"
+                        ? "Open a vault registered on this Flux server. Access remains limited to its configured storage root."
+                        : "Open any notes folder, Obsidian vault, Git repository, or empty directory. Derived data stays in its hidden .flux folder."}
+                    </p>
+                  </div>
+                  <div className="mt-8 flex flex-col gap-2">
+                    {runtime.vaultAccess !== "registry" ? (
+                      <button
+                        type="button"
+                        onClick={() => void chooseVault("open")}
+                        className="rounded-md bg-primary px-3 py-2.5 text-sm font-medium text-primary-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        Open another folder…
+                      </button>
+                    ) : null}
                     <button
                       type="button"
-                      onClick={() => setVaultPickerOpen(false)}
-                      className="px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
+                      onClick={() => void chooseVault("create")}
+                      disabled={!runtime.selectVaultDirectory}
+                      className="rounded-md border px-3 py-2.5 text-sm font-medium outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40 [border-color:var(--layout-separator)]"
                     >
-                      Cancel
+                      Create new vault…
                     </button>
-                  ) : null}
-                  {renameRequest ? (
-                    <div className="fixed inset-0 z-[190] grid place-items-center bg-black/35 p-4">
-                      <form
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          renamePath(renameRequest.path, renameRequest.value);
-                          setRenameRequest(undefined);
-                        }}
-                        className="w-full max-w-sm rounded-xl border bg-popover p-5 shadow-2xl [border-color:var(--layout-separator)]"
+                    {vault ? (
+                      <button
+                        type="button"
+                        onClick={() => setVaultPickerOpen(false)}
+                        className="px-3 py-2 text-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
                       >
-                        <label htmlFor="document-rename" className="text-sm font-semibold">
-                          Rename file
-                        </label>
-                        <input
-                          id="document-rename"
-                          autoFocus
-                          value={renameRequest.value}
-                          onChange={(event) =>
-                            setRenameRequest({ ...renameRequest, value: event.target.value })
-                          }
-                          className="mt-3 h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/50 [border-color:var(--layout-separator)]"
-                        />
-                        <div className="mt-4 flex justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setRenameRequest(undefined)}
-                            className="rounded-md px-3 py-1.5 text-sm hover:bg-accent"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="submit"
-                            className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground"
-                          >
-                            Rename
-                          </button>
-                        </div>
-                      </form>
-                    </div>
-                  ) : null}
+                        Return to {vault.name}
+                      </button>
+                    ) : null}
+                    {renameRequest ? (
+                      <div className="fixed inset-0 z-[190] grid place-items-center bg-black/35 p-4">
+                        <form
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            renamePath(renameRequest.path, renameRequest.value);
+                            setRenameRequest(undefined);
+                          }}
+                          className="w-full max-w-sm rounded-xl border bg-popover p-5 shadow-2xl [border-color:var(--layout-separator)]"
+                        >
+                          <label htmlFor="document-rename" className="text-sm font-semibold">
+                            Rename file
+                          </label>
+                          <input
+                            id="document-rename"
+                            autoFocus
+                            value={renameRequest.value}
+                            onChange={(event) =>
+                              setRenameRequest({ ...renameRequest, value: event.target.value })
+                            }
+                            className="mt-3 h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/50 [border-color:var(--layout-separator)]"
+                          />
+                          <div className="mt-4 flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setRenameRequest(undefined)}
+                              className="rounded-md px-3 py-1.5 text-sm hover:bg-accent"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="submit"
+                              className="rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground"
+                            >
+                              Rename
+                            </button>
+                          </div>
+                        </form>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             </div>

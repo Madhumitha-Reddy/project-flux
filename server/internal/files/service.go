@@ -68,6 +68,9 @@ func (s *Service) List() ([]domain.FileEntry, error) {
 		if entry.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
+		if !entry.IsDir() && !IsSupportedVaultFile(relativePath) {
+			return nil
+		}
 
 		info, err := entry.Info()
 		if err != nil {
@@ -82,6 +85,23 @@ func (s *Service) List() ([]domain.FileEntry, error) {
 
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	return entries, nil
+}
+
+func (s *Service) Metadata(relativePath string) (domain.FileEntry, error) {
+	s.tree.RLock()
+	defer s.tree.RUnlock()
+	resolvedPath, normalizedPath, err := s.resolve(relativePath)
+	if err != nil {
+		return domain.FileEntry{}, err
+	}
+	if err := rejectSymlinks(s.root, resolvedPath); err != nil {
+		return domain.FileEntry{}, err
+	}
+	info, err := os.Stat(resolvedPath)
+	if err != nil {
+		return domain.FileEntry{}, err
+	}
+	return fileEntry(normalizedPath, info), nil
 }
 
 func (s *Service) CreateDirectory(relativePath string) (domain.FileEntry, error) {
@@ -602,15 +622,31 @@ func IsInternal(relativePath string) bool {
 	}
 }
 
-// IsIgnored applies vault traversal exclusions at every directory depth.
+// IsIgnored applies hidden application/cache exclusions at every directory depth.
+// Visible dependency and build directories are deliberately traversed: Obsidian shows
+// supported notes and attachments inside them while hiding unsupported code files.
 func IsIgnored(relativePath string) bool {
 	for _, component := range strings.Split(filepath.ToSlash(relativePath), "/") {
 		switch component {
-		case ".flux", ".git", ".obsidian", ".agents", ".cache", ".codex-plugins", ".turbo", "node_modules", "dist", "build":
+		case ".flux", ".git", ".obsidian", ".agents", ".cache", ".codex-plugins", ".next", ".nuxt", ".output", ".svelte-kit", ".turbo", ".vite":
 			return true
 		}
 	}
 	return false
+}
+
+// IsSupportedVaultFile mirrors Obsidian's native vault formats. Source-code and
+// arbitrary text files remain on disk but do not become notes in the explorer/index.
+func IsSupportedVaultFile(relativePath string) bool {
+	switch strings.ToLower(filepath.Ext(relativePath)) {
+	case ".md", ".canvas", ".base",
+		".bmp", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif",
+		".mp3", ".wav", ".m4a", ".3gp", ".flac", ".ogg", ".oga", ".opus",
+		".mp4", ".webm", ".ogv", ".mov", ".mkv", ".pdf":
+		return true
+	default:
+		return false
+	}
 }
 
 func fileEntry(relativePath string, info os.FileInfo) domain.FileEntry {
@@ -618,13 +654,8 @@ func fileEntry(relativePath string, info os.FileInfo) domain.FileEntry {
 	kind := domain.FileKindBinary
 	if info.IsDir() {
 		kind = domain.FileKindDirectory
-	} else if extension == ".md" || extension == ".markdown" {
+	} else if extension == ".md" {
 		kind = domain.FileKindMarkdown
-	} else {
-		switch extension {
-		case ".txt", ".json", ".yaml", ".yml", ".toml", ".go", ".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".xml", ".csv":
-			kind = domain.FileKindText
-		}
 	}
 	return domain.FileEntry{
 		Path:       relativePath,

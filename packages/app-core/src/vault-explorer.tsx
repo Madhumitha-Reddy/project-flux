@@ -11,11 +11,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { ContextMenu, HoverCard } from "radix-ui";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@flux/shared-ui/components/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@flux/shared-ui/components/tooltip";
 import ReadingView from "./reading-view";
 import { splitFrontmatter } from "./frontmatter";
 import type { DemoDocument } from "./markdown-editor";
@@ -33,6 +29,8 @@ interface VaultExplorerProps {
   onOpenTrash: () => void;
   onPreview: (path: string) => Promise<string | null>;
   documents: DemoDocument[];
+  expandedFolders?: string[];
+  onExpandedFoldersChange?: (paths: string[]) => void;
 }
 
 const menuClass =
@@ -42,6 +40,7 @@ const itemClass =
 
 function filePresentation(entry: FileEntry) {
   if (entry.kind === "directory") return { label: entry.name, badge: "" };
+  if (/^\.[^.]+$/.test(entry.name)) return { label: entry.name, badge: "" };
   const extension = entry.name.match(/\.([^.]+)$/)?.[1] ?? "";
   if (entry.kind === "markdown")
     return { label: entry.name.replace(/\.(md|markdown)$/i, ""), badge: "" };
@@ -78,9 +77,20 @@ export function VaultExplorer({
   onOpenTrash,
   onPreview,
   documents,
+  expandedFolders,
+  onExpandedFoldersChange,
 }: VaultExplorerProps) {
   const [selectedFolder, setSelectedFolder] = useState<string>();
-  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
+  const [localExpandedPaths, setLocalExpandedPaths] = useState<Set<string>>(new Set());
+  const expandedPaths = useMemo(
+    () => (expandedFolders ? new Set(expandedFolders) : localExpandedPaths),
+    [expandedFolders, localExpandedPaths]
+  );
+  const updateExpandedPaths = (update: (current: Set<string>) => Set<string>) => {
+    const next = update(expandedPaths);
+    if (expandedFolders) onExpandedFoldersChange?.([...next].sort());
+    else setLocalExpandedPaths(next);
+  };
   const [sortByName, setSortByName] = useState(true);
   const [showArchived, setShowArchived] = useState(false);
   const [dropTarget, setDropTarget] = useState<string>();
@@ -169,7 +179,7 @@ export function VaultExplorer({
   const beginCreate = (kind: "note" | "folder", parent: string) => {
     cancelInlineEditRef.current = false;
     if (parent) {
-      setExpandedPaths((current) => {
+      updateExpandedPaths((current) => {
         const next = new Set(current);
         next.add(parent);
         return next;
@@ -273,7 +283,7 @@ export function VaultExplorer({
             return;
           }
           setSelectedFolder(entry.path);
-          setExpandedPaths((current) => {
+          updateExpandedPaths((current) => {
             const next = new Set(current);
             if (next.has(entry.path)) next.delete(entry.path);
             else next.add(entry.path);
@@ -373,9 +383,7 @@ export function VaultExplorer({
               <TooltipContent side="right" sideOffset={8} className="max-w-72 items-start">
                 <span className="min-w-0">
                   <span className="block truncate font-medium">{entry.path}</span>
-                  <span className="mt-0.5 block text-[10px] text-muted-foreground">
-                    {metadata}
-                  </span>
+                  <span className="mt-0.5 block text-[10px] text-muted-foreground">{metadata}</span>
                 </span>
               </TooltipContent>
             </Tooltip>
@@ -383,18 +391,30 @@ export function VaultExplorer({
               <HoverCard.Content
                 side="right"
                 align="start"
-                sideOffset={8}
-                className="z-[160] w-[26rem] overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-xl [border-color:var(--layout-separator)]"
+                sideOffset={10}
+                collisionPadding={12}
+                className="z-[160] w-[30rem] max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-2xl [border-color:var(--layout-separator)]"
               >
-                <div className="border-b px-4 py-3 [border-color:var(--layout-separator)]">
-                  <p className="truncate text-sm font-semibold">{presentation.label}</p>
-                  <p className="mt-1 truncate text-[11px] text-muted-foreground">{entry.path}</p>
+                <div className="grid grid-cols-[3px_minmax(0,1fr)] border-b [border-color:var(--layout-separator)]">
+                  <span className="bg-primary/70" aria-hidden="true" />
+                  <div className="px-4 py-3">
+                    <p className="truncate text-sm font-semibold tracking-tight">
+                      {presentation.label}
+                    </p>
+                    <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
+                      {entry.path}
+                    </p>
+                    <p className="mt-1.5 text-[10px] text-muted-foreground">{metadata}</p>
+                  </div>
                 </div>
-                <div className="max-h-80 overflow-auto bg-background/55">
+                <div className="max-h-96 overflow-auto bg-background/70">
                   {preview?.loading ? (
-                    <p className="p-4 text-xs text-muted-foreground">Loading preview…</p>
+                    <div className="flex items-center gap-2 p-5 text-xs text-muted-foreground">
+                      <span className="size-3 animate-spin rounded-full border-2 border-muted-foreground/25 border-t-foreground motion-reduce:animate-none" />
+                      Loading preview…
+                    </div>
                   ) : preview?.content?.trim() ? (
-                    <div className="[&_.flux-reading-view]:max-w-none [&_.flux-reading-view]:px-4 [&_.flux-reading-view]:pb-6 [&_.flux-reading-view]:pt-3 [&_.flux-reading-view]:text-sm">
+                    <div className="[&_.flux-reading-view]:max-w-none [&_.flux-reading-view]:px-5 [&_.flux-reading-view]:pb-8 [&_.flux-reading-view]:pt-4 [&_.flux-reading-view]:text-sm">
                       <ReadingView
                         value={splitFrontmatter(preview.content).body}
                         documents={documents}
@@ -523,7 +543,7 @@ export function VaultExplorer({
           type="button"
           aria-label="Collapse all"
           title="Collapse all"
-          onClick={() => setExpandedPaths(new Set())}
+          onClick={() => updateExpandedPaths(() => new Set())}
           className="grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-accent"
         >
           <ChevronRight className="size-3.5" />

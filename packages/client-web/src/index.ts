@@ -1,4 +1,5 @@
 import type {
+  AppBootstrap,
   CreateFileRequest,
   FileDocument,
   FileEntry,
@@ -7,12 +8,17 @@ import type {
   OpenVaultRequest,
   PatchFileRequest,
   PurgeResult,
+  RecentVault,
   SaveFileRequest,
   SaveResult,
   ServerStatus,
   TrashEntry,
   TrashRetentionDays,
   VaultInfo,
+  VaultGraph,
+  VaultChange,
+  VaultLocation,
+  WorkspaceSession,
 } from "@flux/bridge-contract";
 
 export class FluxClientError extends Error {
@@ -36,6 +42,63 @@ export class WebFluxClient implements FluxClient {
 
   getStatus() {
     return this.request<ServerStatus>("/status");
+  }
+
+  getBootstrap(windowId: string) {
+    const query = new URLSearchParams({ windowId });
+    return this.request<AppBootstrap>(`/bootstrap?${query.toString()}`);
+  }
+
+  listRecentVaults() {
+    return this.request<RecentVault[]>("/recent-vaults");
+  }
+
+  listAvailableVaults() {
+    return this.request<VaultLocation[]>("/vaults/available");
+  }
+
+  rememberVault(vault: Pick<RecentVault, "vaultId" | "path" | "displayName">) {
+    return this.request<void>(`/recent-vaults/${encodeURIComponent(vault.vaultId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ path: vault.path, displayName: vault.displayName }),
+    });
+  }
+
+  forgetVault(vaultId: string) {
+    return this.request<void>(`/recent-vaults/${encodeURIComponent(vaultId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async getWorkspace(windowId: string, vaultId?: string) {
+    const query = new URLSearchParams();
+    if (vaultId) query.set("vaultId", vaultId);
+    try {
+      return await this.request<WorkspaceSession>(
+        `/workspace-sessions/${encodeURIComponent(windowId)}${query.size ? `?${query}` : ""}`
+      );
+    } catch (error) {
+      if (error instanceof FluxClientError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  saveWorkspace(windowId: string, vaultId: string, state: unknown) {
+    return this.request<void>(`/workspace-sessions/${encodeURIComponent(windowId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ vaultId, state }),
+    });
+  }
+
+  getAppSettings() {
+    return this.request<Record<string, unknown>>("/app-settings");
+  }
+
+  putAppSetting(key: string, value: unknown) {
+    return this.request<void>(`/app-settings/${encodeURIComponent(key)}`, {
+      method: "PUT",
+      body: JSON.stringify({ value }),
+    });
   }
 
   openVault(request: OpenVaultRequest = {}) {
@@ -64,13 +127,19 @@ export class WebFluxClient implements FluxClient {
     onRevision: (revision: number) => void,
     onError?: (error: Error) => void
   ) {
-    const source = new EventSource(
-      `${this.baseURL}/vaults/${encodeURIComponent(vaultId)}/events`
-    );
+    return this.watchVaultChanges(vaultId, (change) => onRevision(change.revision), onError);
+  }
+
+  watchVaultChanges(
+    vaultId: string,
+    onChange: (change: VaultChange) => void,
+    onError?: (error: Error) => void
+  ) {
+    const source = new EventSource(`${this.baseURL}/vaults/${encodeURIComponent(vaultId)}/events`);
     source.addEventListener("revision", (event) => {
       try {
-        const payload = JSON.parse((event as MessageEvent<string>).data) as { revision?: unknown };
-        if (typeof payload.revision === "number") onRevision(payload.revision);
+        const payload = JSON.parse((event as MessageEvent<string>).data) as VaultChange;
+        if (typeof payload.revision === "number") onChange(payload);
       } catch (error) {
         onError?.(error instanceof Error ? error : new Error(String(error)));
       }
@@ -81,6 +150,28 @@ export class WebFluxClient implements FluxClient {
 
   listFiles(vaultId: string) {
     return this.request<FileEntry[]>(`/vaults/${encodeURIComponent(vaultId)}/files`);
+  }
+
+  getGraph(vaultId: string) {
+    return this.request<VaultGraph>(`/vaults/${encodeURIComponent(vaultId)}/graph`);
+  }
+
+  async getFileMetadata(vaultId: string, path: string) {
+    const query = new URLSearchParams({ path });
+    try {
+      return await this.request<FileEntry>(
+        `/vaults/${encodeURIComponent(vaultId)}/files/metadata?${query.toString()}`
+      );
+    } catch (error) {
+      if (error instanceof FluxClientError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  rebuildIndex(vaultId: string) {
+    return this.request<void>(`/vaults/${encodeURIComponent(vaultId)}/index/rebuild`, {
+      method: "POST",
+    });
   }
 
   createDirectory(vaultId: string, path: string) {

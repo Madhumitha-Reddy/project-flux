@@ -35,6 +35,10 @@ func (s *Service) Status() domain.ServerStatus {
 	return status
 }
 
+func (s *Service) AvailableVaults() ([]domain.VaultLocation, error) {
+	return s.vaults.Available()
+}
+
 func (s *Service) OpenVault(path string) (domain.VaultInfo, error) {
 	context, err := s.vaults.Open(path)
 	if err != nil {
@@ -56,7 +60,34 @@ func (s *Service) ListFiles(vaultID string) ([]domain.FileEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return context.Files.List()
+	return context.ListFiles()
+}
+
+func (s *Service) Graph(vaultID string) (domain.VaultGraph, error) {
+	context, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return domain.VaultGraph{}, err
+	}
+	if context.Index == nil {
+		return domain.VaultGraph{Nodes: []domain.GraphNode{}, Edges: []domain.GraphEdge{}}, nil
+	}
+	return context.Index.Graph()
+}
+
+func (s *Service) FileMetadata(vaultID, path string) (domain.FileEntry, error) {
+	context, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return domain.FileEntry{}, err
+	}
+	return context.Files.Metadata(path)
+}
+
+func (s *Service) VaultPath(vaultID string) (string, error) {
+	context, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return "", err
+	}
+	return context.RootPath(), nil
 }
 
 func (s *Service) VaultRevision(vaultID string) (uint64, error) {
@@ -73,6 +104,22 @@ func (s *Service) WaitVaultRevision(ctx context.Context, vaultID string, after u
 		return 0, err
 	}
 	return vaultContext.WaitRevision(ctx, after), nil
+}
+
+func (s *Service) VaultChanges(vaultID string, after uint64) (domain.VaultChange, error) {
+	context, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return domain.VaultChange{}, err
+	}
+	return context.ChangesSince(after), nil
+}
+
+func (s *Service) RebuildIndex(vaultID string) error {
+	context, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return err
+	}
+	return context.RebuildIndex()
 }
 
 func (s *Service) ReadFile(vaultID, path string) (domain.FileDocument, error) {
@@ -140,11 +187,11 @@ func (s *Service) MoveFile(vaultID, sourcePath, destinationPath string) (domain.
 	entry, err := context.Files.Move(sourcePath, destinationPath)
 	if errors.Is(err, files.ErrLinkRewrite) {
 		s.vaults.Degrade(vaultID)
-		s.reindex(context, vaultID)
+		s.moveIndex(context, vaultID, sourcePath, entry)
 		return entry, nil
 	}
 	if err == nil {
-		s.reindex(context, vaultID)
+		s.moveIndex(context, vaultID, sourcePath, entry)
 	}
 	return entry, err
 }
@@ -156,7 +203,7 @@ func (s *Service) DeleteFile(vaultID, path string) (domain.TrashEntry, error) {
 	}
 	entry, err := context.Files.Delete(path)
 	if err == nil {
-		s.reindex(context, vaultID)
+		context.QueueDelete(path)
 	}
 	return entry, err
 }
@@ -168,7 +215,7 @@ func (s *Service) RestoreFile(vaultID, trashID string) (domain.FileEntry, error)
 	}
 	entry, err := context.Files.Restore(trashID)
 	if err == nil {
-		s.reindex(context, vaultID)
+		s.upsert(context, vaultID, entry)
 	}
 	return entry, err
 }
@@ -202,18 +249,19 @@ func (s *Service) PurgeTrash(vaultID string, retentionDays int) (domain.PurgeRes
 }
 
 func (s *Service) upsert(context *vault.Context, vaultID string, entry domain.FileEntry) {
-	if context.Index != nil && context.Index.UpsertFile(entry) != nil {
-		s.vaults.Degrade(vaultID)
+	if context.Index != nil {
+		if context.Index.UpsertFile(entry) != nil {
+			s.vaults.Degrade(vaultID)
+			return
+		}
+		context.QueueIndex(entry.Path)
 	}
 }
 
-func (s *Service) reindex(context *vault.Context, vaultID string) {
-	if context.Index == nil {
+func (s *Service) moveIndex(context *vault.Context, vaultID, sourcePath string, entry domain.FileEntry) {
+	if context.Index != nil && context.Index.DeletePath(sourcePath) != nil {
+		s.vaults.Degrade(vaultID)
 		return
 	}
-	// ponytail: full rescan favors correctness; replace with targeted watcher updates after large-vault benchmarks.
-	entries, err := context.Files.List()
-	if err != nil || context.Index.ReplaceFiles(entries) != nil {
-		s.vaults.Degrade(vaultID)
-	}
+	s.upsert(context, vaultID, entry)
 }

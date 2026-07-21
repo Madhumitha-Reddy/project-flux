@@ -1,11 +1,22 @@
-import { FluxApp, type FluxRuntime } from "@flux/app-core";
+import { createClientStatePersistence, FluxApp, type FluxRuntime } from "@flux/app-core";
 import { WebFluxClient } from "@flux/client-web";
 
 const client = new WebFluxClient();
+const statePersistence = createClientStatePersistence(client);
 
 const webRuntime: FluxRuntime = {
   label: "Web",
   client,
+  vaultAccess: "registry",
+  statePersistence,
+  getWindowId: async () => {
+    const key = "flux-window-id";
+    const existing = sessionStorage.getItem(key);
+    if (existing) return existing;
+    const id = crypto.randomUUID();
+    sessionStorage.setItem(key, id);
+    return id;
+  },
   connect: async () => {
     try {
       const status = await client.getStatus();
@@ -16,12 +27,14 @@ const webRuntime: FluxRuntime = {
       return "Go backend offline · start the server on port 8080";
     }
   },
-  selectVaultDirectory: async (mode) =>
-    window
-      .prompt(
-        mode === "create" ? "Absolute path for new local vault" : "Absolute path of local vault"
-      )
-      ?.trim() || null,
+  selectVaultDirectory: async (mode) => {
+    if (mode === "open") return null;
+    const name = window.prompt("Vault name")?.trim();
+    if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+      return null;
+    }
+    return name;
+  },
 };
 
 export default function App() {

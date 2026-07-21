@@ -6,6 +6,7 @@ export interface WorkspaceTab {
   pinned?: boolean;
   document: DemoDocument | null;
   pdf?: { path: string; data: ArrayBuffer };
+  preview?: { path: string; data: ArrayBuffer; mimeType: string };
   mode: MarkdownMode;
   showBacklinks: boolean;
   bookmarked: boolean;

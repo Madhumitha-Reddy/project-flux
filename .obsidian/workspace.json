@@ -11,10 +11,10 @@
             "id": "f3efb63f7e085187",
             "type": "leaf",
             "state": {
-              "type": "empty",
+              "type": "graph",
               "state": {},
-              "icon": "lucide-file",
-              "title": "New tab"
+              "icon": "lucide-git-fork",
+              "title": "Graph view"
             }
           }
         ]
@@ -74,7 +74,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300
+    "width": 235.5
   },
   "right": {
     "id": "1b777d85f1e37b14",
@@ -177,5 +177,48 @@
     }
   },
   "active": "f3efb63f7e085187",
-  "lastOpenFiles": []
+  "lastOpenFiles": [
+    "apps/desktop/release/builder-debug.yml",
+    "apps/desktop/release/FLUX-0.0.1-arm64-mac.zip.blockmap",
+    "apps/desktop/release/FLUX-0.0.1-arm64-mac.zip",
+    "apps/desktop/release/FLUX-0.0.1-arm64.dmg.blockmap",
+    "apps/desktop/release/FLUX-0.0.1-arm64.dmg",
+    "apps/desktop/release/zi0tRNCb",
+    "apps/desktop/release/mac-arm64/FLUX.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/zh_TW_NEUTER.lproj/locale.pak",
+    "apps/desktop/release/mac-arm64/FLUX.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/zh_TW_MASCULINE.lproj/locale.pak",
+    "apps/desktop/release/mac-arm64/FLUX.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/zh_TW_FEMININE.lproj/locale.pak",
+    "apps/desktop/release/mac-arm64/FLUX.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/zh_TW.lproj/locale.pak",
+    "apps/desktop/release/mac-arm64/FLUX.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources/zh_CN_NEUTER.lproj/locale.pak",
+    "node_modules/js-binary-schema-parser/example/dog.gif",
+    "node_modules/js-binary-schema-parser/example/horses.gif",
+    "node_modules/js-binary-schema-parser/example/box.gif",
+    "node_modules/js-binary-schema-parser/README.md",
+    "node_modules/tiny-lru/README.md",
+    "node_modules/parse-svg-path/README.md",
+    "node_modules/ismobilejs/README.md",
+    "node_modules/ismobilejs/CONTRIBUTORS.md",
+    "node_modules/gifuct-js/demo/jblack.gif",
+    "node_modules/gifuct-js/demo/horses.gif",
+    "node_modules/gifuct-js/demo/dog.gif",
+    "node_modules/gifuct-js/README.md",
+    "node_modules/eventemitter3/README.md",
+    "node_modules/earcut/README.md",
+    "node_modules/@webgpu/types/README.md",
+    "node_modules/@types/earcut/README.md",
+    "node_modules/@pixi/colord/README.md",
+    "node_modules/pixi.js/skills/pixijs-scene-sprite/references/sprite.md",
+    "node_modules/pixi.js/skills/pixijs-scene-sprite/references/tiling-sprite.md",
+    "node_modules/pixi.js/skills/pixijs-scene-mesh/references/mesh-rope.md",
+    "node_modules/pixi.js/skills/pixijs-scene-sprite/references/animated-sprite.md",
+    "node_modules/pixi.js/skills/pixijs-scene-sprite/references/nineslice-sprite.md",
+    "node_modules/pixi.js/skills/pixijs-scene-mesh/references/mesh.md",
+    "node_modules/pixi.js/skills/pixijs-scene-mesh/references/mesh-simple.md",
+    "node_modules/pixi.js/skills/pixijs-scene-mesh/references/mesh-perspective.md",
+    "node_modules/pixi.js/skills/pixijs-scene-mesh/references/mesh-plane.md",
+    "node_modules/pixi.js/skills/pixijs-scene-text/references/text.md",
+    "node_modules/pixi.js/skills/pixijs-scene-core-concepts/references/constructor-options.md",
+    "node_modules/pixi.js/skills/pixijs-scene-text/references/split-text.md",
+    "node_modules/pixi.js/skills/pixijs-scene-text/references/bitmap-text.md",
+    "node_modules/pixi.js/skills/pixijs-scene-text/references/html-text.md"
+  ]
 }

@@ -13,7 +13,7 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=1 GOOS=linux go build -o flux-server ./main.go
+RUN CGO_ENABLED=1 GOOS=linux go build -tags sqlite_fts5 -o flux-server ./main.go
 
 # Runtime stage
 FROM alpine:3.23
