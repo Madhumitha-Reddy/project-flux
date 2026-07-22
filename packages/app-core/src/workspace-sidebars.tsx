@@ -27,6 +27,7 @@ import {
   Puzzle,
   RefreshCw,
   Search,
+  Settings,
   Settings2,
   Tags,
   X,
@@ -52,22 +53,52 @@ import { cn } from "@flux/shared-ui";
 
 export type LeftPane = "files" | "search" | "bookmarks";
 export type RightPane =
-  "backlinks" | "outgoing" | "tags" | "properties" | "outline" | "source-control";
+  | "backlinks"
+  | "outgoing"
+  | "tags"
+  | "properties"
+  | "outline"
+  | "source-control";
 
-const leftOptions: Array<{ id: LeftPane; label: string; icon: typeof Files }> = [
-  { id: "files", label: "Files", icon: Files },
-  { id: "search", label: "Search", icon: Search },
-  { id: "bookmarks", label: "Bookmarks", icon: Bookmark },
-];
+export function getLeftOptions(plugins?: Record<string, boolean>): Array<{ id: LeftPane; label: string; icon: typeof Files }> {
+  const options: Array<{ id: LeftPane; label: string; icon: typeof Files }> = [];
+  if (!plugins || plugins["file-explorer"] !== false) {
+    options.push({ id: "files", label: "Files", icon: Files });
+  }
+  if (!plugins || plugins["search"] !== false) {
+    options.push({ id: "search", label: "Search", icon: Search });
+  }
+  if (!plugins || plugins["bookmarks"] !== false) {
+    options.push({ id: "bookmarks", label: "Bookmarks", icon: Bookmark });
+  }
+  return options;
+}
 
-const rightOptions: Array<{ id: RightPane; label: string; icon: typeof List }> = [
-  { id: "backlinks", label: "Backlinks", icon: Link2 },
-  { id: "outgoing", label: "Outgoing links", icon: ExternalLink },
-  { id: "tags", label: "Tags", icon: Tags },
-  { id: "properties", label: "Properties", icon: Settings2 },
-  { id: "outline", label: "Outline", icon: List },
-  { id: "source-control", label: "Source Control", icon: GitBranch },
-];
+export function getRightOptions(plugins?: Record<string, boolean>): Array<{ id: RightPane; label: string; icon: typeof List }> {
+  const options: Array<{ id: RightPane; label: string; icon: typeof List }> = [];
+
+  if (!plugins || plugins["backlinks"] !== false) {
+    options.push({ id: "backlinks", label: "Backlinks", icon: Link2 });
+  }
+
+  options.push({ id: "outgoing", label: "Outgoing links", icon: ExternalLink });
+  options.push({ id: "tags", label: "Tags", icon: Tags });
+
+  if (!plugins || plugins["properties"] !== false) {
+    options.push({ id: "properties", label: "Properties", icon: Settings2 });
+  }
+
+  if (!plugins || plugins["outline"] !== false) {
+    options.push({ id: "outline", label: "Outline", icon: List });
+  }
+
+  if (!plugins || plugins["sync"] !== false) {
+    options.push({ id: "source-control", label: "Source Control", icon: GitBranch });
+  }
+
+  return options;
+}
+
 
 function IconButton({
   label,
@@ -1533,12 +1564,14 @@ export function WorkspaceSidebarHeader<T extends LeftPane | RightPane>({
   side,
   active,
   onChange,
+  plugins,
 }: {
   side: "left" | "right";
   active: T;
   onChange: (id: T) => void;
+  plugins?: Record<string, boolean>;
 }) {
-  const options = side === "left" ? leftOptions : rightOptions;
+  const options = side === "left" ? getLeftOptions(plugins) : getRightOptions(plugins);
   return (
     <PaneTabs
       options={options as Array<{ id: T; label: string; icon: typeof Files }>}
@@ -1675,31 +1708,58 @@ export function WorkspaceRibbon({
   onGraph,
   onFiles,
   onPlugins,
+  onCanvas,
+  onSettings,
+  plugins,
 }: {
-  onGraph: () => void;
-  onFiles: () => void;
-  onPlugins: () => void;
+  onGraph?: () => void;
+  onFiles?: () => void;
+  onPlugins?: () => void;
+  onCanvas?: () => void;
+  onSettings?: () => void;
+  plugins?: Record<string, boolean>;
 }) {
+  const showFiles = !plugins || plugins["file-explorer"] !== false;
+  const showGraph = !plugins || plugins["graph-view"] !== false;
+  const showCanvas = !plugins || plugins["canvas"] !== false;
+  const showDailyNotes = !plugins || plugins["daily-notes"] !== false;
+  const showSync = !plugins || plugins["sync"] !== false;
+
   return (
     <nav aria-label="Workspace tools" className="flex h-full flex-col items-center gap-0.5 py-1.5">
-      <IconButton label="Files" onClick={onFiles}>
-        <Files className="size-4" />
-      </IconButton>
-      <IconButton label="Graph view" onClick={onGraph}>
-        <Network className="size-4" />
-      </IconButton>
-      <IconButton label="Canvas">
-        <Grid2X2 className="size-4" />
-      </IconButton>
-      <IconButton label="Calendar">
-        <CalendarDays className="size-4" />
-      </IconButton>
-      <IconButton label="Source Control">
-        <GitBranch className="size-4" />
-      </IconButton>
+      {showFiles ? (
+        <IconButton label="Files" onClick={onFiles}>
+          <Files className="size-4" />
+        </IconButton>
+      ) : null}
+      {showGraph ? (
+        <IconButton label="Graph view" onClick={onGraph}>
+          <Network className="size-4" />
+        </IconButton>
+      ) : null}
+      {showCanvas ? (
+        <IconButton label="Canvas" onClick={onCanvas}>
+          <Grid2X2 className="size-4" />
+        </IconButton>
+      ) : null}
+      {showDailyNotes ? (
+        <IconButton label="Calendar">
+          <CalendarDays className="size-4" />
+        </IconButton>
+      ) : null}
+      {showSync ? (
+        <IconButton label="Source Control">
+          <GitBranch className="size-4" />
+        </IconButton>
+      ) : null}
       <IconButton label="Plugins" onClick={onPlugins}>
         <Puzzle className="size-4" />
       </IconButton>
+      <div className="mt-auto">
+        <IconButton label="Settings" onClick={onSettings}>
+          <Settings className="size-4" />
+        </IconButton>
+      </div>
     </nav>
   );
 }
