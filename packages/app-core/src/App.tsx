@@ -27,6 +27,7 @@ import { TooltipProvider } from "@flux/shared-ui/components/tooltip";
 import { Toaster, toast } from "@flux/shared-ui/components/sonner";
 import { VaultPluginHost, type PluginBundle } from "@flux/plugin-runtime";
 import type { PluginCapability } from "@flux/plugin-sdk";
+import { Bookmark } from "lucide-react";
 import type {
   DocumentReferences,
   FileEntry,
@@ -65,6 +66,14 @@ import {
   type LeftPane,
   type RightPane,
 } from "./workspace-sidebars";
+import { AddBookmarkDialog } from "./add-bookmark-dialog";
+import {
+  loadBookmarks,
+  saveBookmarks,
+  loadBookmarkGroups,
+  saveBookmarkGroups,
+  type BookmarkItem,
+} from "./bookmark-store";
 import { PdfExportDialog } from "./pdf-export";
 import { FilePreview } from "./file-preview";
 import {
@@ -566,6 +575,10 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const [emptyTrashRequest, setEmptyTrashRequest] = useState(false);
   const [pdfExportDocument, setPdfExportDocument] = useState<DemoDocument | null>(null);
   const [pdfExportOpen, setPdfExportOpen] = useState(false);
+  const [bookmarks, setBookmarks] = useState<BookmarkItem[]>(() => loadBookmarks());
+  const [bookmarkGroups, setBookmarkGroups] = useState<string[]>(() => loadBookmarkGroups());
+  const [addBookmarkDialogOpen, setAddBookmarkDialogOpen] = useState(false);
+  const [bookmarkTarget, setBookmarkTarget] = useState<{ title: string; path?: string } | null>(null);
   const [leftSidebarPane, setLeftSidebarPane] = useState<LeftPane>("files");
   const [rightSidebarPane, setRightSidebarPane] = useState<RightPane>("backlinks");
   const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
@@ -722,6 +735,72 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     if (!runtime.client || !vault) return Promise.resolve({ tags: [], properties: [] });
     return runtime.client.getVaultFacets(vault.id);
   }, [runtime.client, sidebarIndexRevision, vault]);
+
+  useEffect(() => {
+    setBookmarks(loadBookmarks(vault?.id));
+    setBookmarkGroups(loadBookmarkGroups(vault?.id));
+  }, [vault?.id]);
+
+  useEffect(() => {
+    saveBookmarks(bookmarks, vault?.id);
+  }, [bookmarks, vault?.id]);
+
+  useEffect(() => {
+    saveBookmarkGroups(bookmarkGroups, vault?.id);
+  }, [bookmarkGroups, vault?.id]);
+
+  const handleOpenAddBookmark = (target?: { title: string; path?: string } | null) => {
+    const defaultTarget =
+      target ||
+      (visibleActiveTab
+        ? { title: visibleActiveTab.title, path: visibleActiveTab.document?.path || visibleActiveTab.pdf?.path }
+        : null);
+    if (!defaultTarget) return;
+    setBookmarkTarget(defaultTarget);
+    setAddBookmarkDialogOpen(true);
+  };
+
+  const handleSaveBookmark = (data: { id?: string; title: string; path: string; group?: string | null }) => {
+    if (data.id) {
+      setBookmarks((prev) =>
+        prev.map((item) =>
+          item.id === data.id
+            ? { ...item, title: data.title, group: data.group }
+            : item
+        )
+      );
+      setStatus(`Updated bookmark ${data.title}`);
+    } else {
+      const newItem: BookmarkItem = {
+        id: `bm-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        title: data.title,
+        path: data.path,
+        group: data.group,
+        createdAt: Date.now(),
+      };
+      setBookmarks((prev) => [...prev, newItem]);
+      setStatus(`Bookmarked ${data.title}`);
+    }
+  };
+
+  const handleRemoveBookmark = (id: string) => {
+    setBookmarks((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const handleCreateBookmarkGroup = (name: string) => {
+    if (name && !bookmarkGroups.includes(name)) {
+      setBookmarkGroups((prev) => [...prev, name]);
+    }
+  };
+
+  const isTabBookmarked = (tab: WorkspaceTab) => {
+    const targetPath = tab.document?.path || tab.pdf?.path || tab.title;
+    return bookmarks.some(
+      (b) =>
+        b.path.toLowerCase() === targetPath.toLowerCase() ||
+        b.title.toLowerCase() === tab.title.toLowerCase()
+    );
+  };
 
   useEffect(() => {
     tabsRef.current = tabs;
@@ -2525,10 +2604,28 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       }
       headerAction={
         tab.document ? (
-          <MarkdownViewToggle
-            mode={tab.mode}
-            onModeChange={(mode) => updateTab(tab.id, (current) => ({ ...current, mode }))}
-          />
+          <div className="flex items-center gap-0.5">
+            {isTabBookmarked(tab) && (
+              <button
+                type="button"
+                aria-label="Edit bookmark"
+                title="Edit bookmark"
+                onClick={() =>
+                  handleOpenAddBookmark({
+                    title: tab.title,
+                    path: tab.document?.path,
+                  })
+                }
+                className="grid size-7 place-items-center rounded-md text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/50"
+              >
+                <Bookmark className="size-4 fill-primary text-primary" />
+              </button>
+            )}
+            <MarkdownViewToggle
+              mode={tab.mode}
+              onModeChange={(mode) => updateTab(tab.id, (current) => ({ ...current, mode }))}
+            />
+          </div>
         ) : null
       }
       menuContent={
@@ -2537,13 +2634,16 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             title={tab.document.title}
             mode={tab.mode}
             showBacklinks={tab.showBacklinks}
-            bookmarked={tab.bookmarked}
+            bookmarked={isTabBookmarked(tab)}
             onModeChange={(mode) => updateTab(tab.id, (current) => ({ ...current, mode }))}
             onBacklinksChange={(showBacklinks) =>
               updateTab(tab.id, (current) => ({ ...current, showBacklinks }))
             }
-            onBookmarkChange={(bookmarked) =>
-              updateTab(tab.id, (current) => ({ ...current, bookmarked }))
+            onBookmarkChange={() =>
+              handleOpenAddBookmark({
+                title: tab.title,
+                path: tab.document?.path,
+              })
             }
             onRename={() => renameFile(tab.id)}
             onAddProperty={() => addProperty(tab.id)}
@@ -3073,10 +3173,13 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                 documents={documents}
                 vaultGraph={vaultGraph}
                 activePath={leafActiveTab?.graphRootPath}
-                bookmarked={leafActiveTab?.bookmarked ?? false}
-                onBookmarkChange={(bookmarked) => {
+                bookmarked={leafActiveTab ? isTabBookmarked(leafActiveTab) : false}
+                onBookmarkChange={() => {
                   if (leafActiveTab) {
-                    updateTab(leafActiveTab.id, (tab) => ({ ...tab, bookmarked }));
+                    handleOpenAddBookmark({
+                      title: leafActiveTab.title,
+                      path: leafActiveTab.document?.path,
+                    });
                   }
                 }}
                 onOpenDocument={openDocument}
@@ -3174,6 +3277,11 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                   if (!runtime.client || !vault) return null;
                   return (await runtime.client.readFile(vault.id, path)).content;
                 }}
+                bookmarks={bookmarks}
+                bookmarkGroups={bookmarkGroups}
+                onRemoveBookmark={handleRemoveBookmark}
+                onOpenAddBookmark={() => handleOpenAddBookmark()}
+                onCreateBookmarkGroup={handleCreateBookmarkGroup}
                 expandedFolders={expandedFolders}
                 onExpandedFoldersChange={setExpandedFolders}
                 onExpandFolder={(path) => void loadFolderChildren(path)}
@@ -4062,6 +4170,16 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             open={pdfExportOpen}
             onOpenChange={setPdfExportOpen}
             onExport={runtime.exportPdf}
+          />
+          <AddBookmarkDialog
+            open={addBookmarkDialogOpen}
+            onOpenChange={setAddBookmarkDialogOpen}
+            target={bookmarkTarget}
+            existingBookmarks={bookmarks}
+            existingGroups={bookmarkGroups}
+            onSave={handleSaveBookmark}
+            onRemove={handleRemoveBookmark}
+            onCreateGroup={handleCreateBookmarkGroup}
           />
           <Toaster />
         </TooltipProvider>
