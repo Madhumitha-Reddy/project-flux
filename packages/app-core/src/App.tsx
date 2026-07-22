@@ -262,7 +262,6 @@ function EditorPathBreadcrumb({
   useEffect(() => {
     if (!isFocused) return;
     inputRef.current?.focus();
-    inputRef.current?.select();
   }, [isFocused]);
 
   const commitRename = () => {
