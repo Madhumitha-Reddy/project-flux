@@ -243,8 +243,8 @@ function FileRow({
           }}
           className={`flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
             selected
-              ? "bg-accent text-accent-foreground"
-              : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+              ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+              : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
           }`}
           style={{ paddingLeft: 8 + depth * 16 }}
         >
