@@ -280,14 +280,14 @@ function EditorPathBreadcrumb({
     <nav
       aria-label="File path"
       title={path}
-      className="mx-auto flex min-w-0 max-w-full items-center justify-center gap-1.5 overflow-hidden"
+      className="mx-auto flex min-w-0 max-w-full items-center justify-center overflow-hidden"
     >
       {segments.map((segment, index) => {
         const currentPath = segments.slice(0, index + 1).join("/");
         const file = index === segments.length - 1;
         return (
-          <span key={currentPath} className="flex min-w-0 items-center gap-1.5">
-            {index ? <span className="select-none text-muted-foreground/45">/</span> : null}
+          <span key={currentPath} className="flex min-w-0 items-center">
+            {index ? <span className="select-none text-muted-foreground/35 mx-1 font-normal text-xs">/</span> : null}
             {file && renaming ? (
               <input
                 ref={inputRef}
@@ -303,7 +303,7 @@ function EditorPathBreadcrumb({
                     setRenaming(false);
                   }
                 }}
-                className="min-w-24 max-w-64 rounded-sm border bg-background px-1.5 py-0.5 text-center font-medium text-foreground outline-none focus:ring-1 focus:ring-ring [border-color:var(--layout-separator)]"
+                className="min-w-24 max-w-64 rounded-sm border bg-background px-1 py-0.5 text-center font-medium text-foreground outline-none focus:ring-1 focus:ring-ring [border-color:var(--layout-separator)]"
               />
             ) : (
               <button
@@ -317,7 +317,7 @@ function EditorPathBreadcrumb({
                   }
                   else onReveal(currentPath, false);
                 }}
-                className={`min-w-0 truncate rounded-sm px-1.5 py-0.5 outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring ${
+                className={`min-w-0 truncate rounded-sm px-1 py-0.5 outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring ${
                   file ? "font-medium text-foreground" : "text-muted-foreground"
                 }`}
               >
