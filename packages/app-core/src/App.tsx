@@ -245,6 +245,7 @@ function workspaceTabPath(tab: WorkspaceTab) {
 function EditorPathBreadcrumb({
   path,
   onReveal,
+  onRename,
 }: {
   path: string;
   onReveal: (path: string, file: boolean) => void;
@@ -254,20 +255,26 @@ function EditorPathBreadcrumb({
   const fileName = segments.at(-1) ?? "";
   const fileLabel = fileName.replace(/\.[^./]+$/, "");
   const [isFocused, setIsFocused] = useState(false);
+  const [draft, setDraft] = useState(fileLabel);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const cancelRenameRef = useRef(false);
 
   useEffect(() => {
     if (!isFocused) return;
-    const handleGlobalClick = () => {
-      setIsFocused(false);
-    };
-    const timer = setTimeout(() => {
-      window.addEventListener("click", handleGlobalClick);
-    }, 0);
-    return () => {
-      window.removeEventListener("click", handleGlobalClick);
-      clearTimeout(timer);
-    };
+    inputRef.current?.focus();
+    inputRef.current?.select();
   }, [isFocused]);
+
+  const commitRename = () => {
+    if (cancelRenameRef.current) {
+      cancelRenameRef.current = false;
+      return;
+    }
+    setIsFocused(false);
+    const next = draft.trim();
+    if (next && next !== fileLabel) onRename?.(path, next);
+    else setDraft(fileLabel);
+  };
 
   return (
     <m.nav
@@ -327,20 +334,39 @@ function EditorPathBreadcrumb({
                       /
                     </m.span>
                   ) : null}
-                  <m.button
-                    layout
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setIsFocused(true);
-                    }}
-                    className={`min-w-0 truncate rounded-sm px-1 py-0.5 outline-none font-medium text-foreground ${
-                      isFocused ? "bg-accent/40 scale-105" : "hover:bg-accent"
-                    }`}
-                    transition={{ type: "spring", stiffness: 120, damping: 20 }}
-                  >
-                    {fileLabel}
-                  </m.button>
+                  {isFocused ? (
+                    <m.input
+                      layout
+                      ref={inputRef}
+                      type="text"
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                      onBlur={commitRename}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.currentTarget.blur();
+                        if (e.key === "Escape") {
+                          cancelRenameRef.current = true;
+                          setDraft(fileLabel);
+                          setIsFocused(false);
+                        }
+                      }}
+                      className="min-w-24 max-w-64 bg-transparent border-none text-center font-medium text-foreground outline-none focus:outline-none focus:ring-0 px-1 py-0.5"
+                      style={{ font: "inherit" }}
+                    />
+                  ) : (
+                    <m.button
+                      layout
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsFocused(true);
+                      }}
+                      className="min-w-0 truncate rounded-sm px-1 py-0.5 outline-none font-medium text-foreground cursor-pointer"
+                      transition={{ type: "spring", stiffness: 120, damping: 20 }}
+                    >
+                      {fileLabel}
+                    </m.button>
+                  )}
                 </m.span>
               )}
             </m.span>
