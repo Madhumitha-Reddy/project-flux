@@ -749,6 +749,7 @@ function LeftSidebar({
   onCreateBookmarkGroup,
   expandedFolders,
   onExpandedFoldersChange,
+  onSelectPath,
 }: {
   activeTitle: string;
   pane: LeftPane;
@@ -772,6 +773,7 @@ function LeftSidebar({
   onCreateBookmarkGroup?: (name: string) => void;
   expandedFolders?: string[];
   onExpandedFoldersChange?: (paths: string[]) => void;
+  onSelectPath?: (path: string) => void;
 }) {
   return (
     <section
@@ -796,6 +798,7 @@ function LeftSidebar({
               onPreview={(path) => onPreviewPath?.(path) ?? Promise.resolve(null)}
               expandedFolders={expandedFolders}
               onExpandedFoldersChange={onExpandedFoldersChange}
+              onSelectPath={onSelectPath}
             />
           ) : (
             <FileExplorer
@@ -1321,6 +1324,7 @@ export function WorkspaceLeftSidebar({
   onCreateBookmarkGroup,
   expandedFolders,
   onExpandedFoldersChange,
+  onSelectPath,
 }: {
   activeTitle: string;
   pane: LeftPane;
@@ -1344,6 +1348,7 @@ export function WorkspaceLeftSidebar({
   onCreateBookmarkGroup?: (name: string) => void;
   expandedFolders?: string[];
   onExpandedFoldersChange?: (paths: string[]) => void;
+  onSelectPath?: (path: string) => void;
 }) {
   return (
     <LeftSidebar
@@ -1369,6 +1374,7 @@ export function WorkspaceLeftSidebar({
       onCreateBookmarkGroup={onCreateBookmarkGroup}
       expandedFolders={expandedFolders}
       onExpandedFoldersChange={onExpandedFoldersChange}
+      onSelectPath={onSelectPath}
     />
   );
 }

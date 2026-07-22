@@ -465,6 +465,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   const [pdfExportDocument, setPdfExportDocument] = useState<DemoDocument | null>(null);
   const [pdfExportOpen, setPdfExportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sidebarSelectedPath, setSidebarSelectedPath] = useState<string | undefined>();
   const [bookmarks, setBookmarks] = useState<BookmarkItem[]>(() => loadBookmarks());
   const [bookmarkGroups, setBookmarkGroups] = useState<string[]>(() => loadBookmarkGroups());
   const [addBookmarkDialogOpen, setAddBookmarkDialogOpen] = useState(false);
@@ -523,6 +524,31 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     activeLeaf?.view === "editor"
       ? tabs.find((tab) => tab.id === activeLeaf.activeTabId)
       : undefined;
+
+  const activeFilePath =
+    visibleActiveTab?.document?.path ??
+    visibleActiveTab?.pdf?.path ??
+    visibleActiveTab?.preview?.path;
+
+  useEffect(() => {
+    if (activeFilePath) {
+      setSidebarSelectedPath(activeFilePath);
+      const separator = activeFilePath.lastIndexOf("/");
+      if (separator > 0) {
+        const folder = activeFilePath.slice(0, separator);
+        const parts = folder.split("/").filter(Boolean);
+        setExpandedFolders((current) => {
+          const next = new Set(current);
+          for (let index = 0; index < parts.length; index++) {
+            next.add(parts.slice(0, index + 1).join("/"));
+          }
+          return [...next].sort();
+        });
+      }
+    } else {
+      setSidebarSelectedPath(undefined);
+    }
+  }, [activeFilePath]);
   const documents = useMemo(() => {
     const library = vault ? vaultDocuments : DOCUMENT_LIBRARY;
     const byPath = new Map(library.map((document) => [document.path ?? document.title, document]));
@@ -1693,6 +1719,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       return [...next].sort();
     });
     setLeftSidebarPane("files");
+    setSidebarSelectedPath(folder);
   };
 
   const commandsFor = (tab: WorkspaceTab, leafId = activeLeafId): FluxTabCommands => {
@@ -1735,6 +1762,24 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     );
     setActiveLeafId(leafId);
     setActiveTabId(tabId);
+
+    const targetTab = tabs.find((t) => t.id === tabId);
+    const targetPath = targetTab ? (targetTab.document?.path ?? targetTab.pdf?.path ?? targetTab.preview?.path) : undefined;
+    if (targetPath) {
+      setSidebarSelectedPath(targetPath);
+      const separator = targetPath.lastIndexOf("/");
+      if (separator > 0) {
+        const folder = targetPath.slice(0, separator);
+        const parts = folder.split("/").filter(Boolean);
+        setExpandedFolders((current) => {
+          const next = new Set(current);
+          for (let index = 0; index < parts.length; index++) {
+            next.add(parts.slice(0, index + 1).join("/"));
+          }
+          return [...next].sort();
+        });
+      }
+    }
   };
 
   const moveTabToLeaf = (event: DragEvent, targetLeafId: number) => {
@@ -1979,6 +2024,22 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
           activeTabId: existing.id,
         }))
       );
+      const targetPath = existing.document?.path ?? existing.pdf?.path ?? existing.preview?.path;
+      if (targetPath) {
+        setSidebarSelectedPath(targetPath);
+        const separator = targetPath.lastIndexOf("/");
+        if (separator > 0) {
+          const folder = targetPath.slice(0, separator);
+          const parts = folder.split("/").filter(Boolean);
+          setExpandedFolders((current) => {
+            const next = new Set(current);
+            for (let index = 0; index < parts.length; index++) {
+              next.add(parts.slice(0, index + 1).join("/"));
+            }
+            return [...next].sort();
+          });
+        }
+      }
       return;
     }
 
@@ -2485,11 +2546,8 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             leftSidebar={
               <WorkspaceLeftSidebar
                 activeTitle={visibleActiveTab?.title ?? ""}
-                activePath={
-                  visibleActiveTab?.document?.path ??
-                  visibleActiveTab?.pdf?.path ??
-                  visibleActiveTab?.preview?.path
-                }
+                activePath={sidebarSelectedPath}
+                onSelectPath={setSidebarSelectedPath}
                 pane={leftSidebarPane}
                 documents={documents}
                 onOpenDocument={(path) => void openDocument(path)}
