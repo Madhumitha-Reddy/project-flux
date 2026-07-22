@@ -245,36 +245,14 @@ function workspaceTabPath(tab: WorkspaceTab) {
 function EditorPathBreadcrumb({
   path,
   onReveal,
-  onRename,
 }: {
   path: string;
   onReveal: (path: string, file: boolean) => void;
-  onRename: (path: string, name: string) => void;
+  onRename?: (path: string, name: string) => void;
 }) {
   const segments = path.split("/").filter(Boolean);
   const fileName = segments.at(-1) ?? "";
   const fileLabel = fileName.replace(/\.[^./]+$/, "");
-  const [renaming, setRenaming] = useState(false);
-  const [draft, setDraft] = useState(fileLabel);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const cancelRenameRef = useRef(false);
-
-  useEffect(() => {
-    if (!renaming) return;
-    inputRef.current?.focus();
-    inputRef.current?.select();
-  }, [renaming]);
-
-  const commitRename = () => {
-    if (cancelRenameRef.current) {
-      cancelRenameRef.current = false;
-      return;
-    }
-    setRenaming(false);
-    const next = draft.trim();
-    if (next && next !== fileLabel) onRename(path, next);
-    else setDraft(fileLabel);
-  };
 
   return (
     <nav
@@ -288,40 +266,18 @@ function EditorPathBreadcrumb({
         return (
           <span key={currentPath} className="flex min-w-0 items-center">
             {index ? <span className="select-none text-muted-foreground/35 mx-1 font-normal text-xs">/</span> : null}
-            {file && renaming ? (
-              <input
-                ref={inputRef}
-                aria-label="Rename file"
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                onBlur={commitRename}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") event.currentTarget.blur();
-                  if (event.key === "Escape") {
-                    cancelRenameRef.current = true;
-                    setDraft(fileLabel);
-                    setRenaming(false);
-                  }
-                }}
-                className="min-w-24 max-w-64 rounded-sm border bg-background px-1 py-0.5 text-center font-medium text-foreground outline-none focus:ring-1 focus:ring-ring [border-color:var(--layout-separator)]"
-              />
+            {file ? (
+              <span className="min-w-0 truncate font-medium text-foreground px-1 py-0.5">
+                {fileLabel}
+              </span>
             ) : (
               <button
                 type="button"
-                aria-current={file ? "page" : undefined}
-                aria-label={file ? `Rename ${fileLabel}` : `Reveal ${segment}`}
-                onClick={() => {
-                  if (file) {
-                    setDraft(fileLabel);
-                    setRenaming(true);
-                  }
-                  else onReveal(currentPath, false);
-                }}
-                className={`min-w-0 truncate rounded-sm px-1 py-0.5 outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring ${
-                  file ? "font-medium text-foreground" : "text-muted-foreground"
-                }`}
+                aria-label={`Reveal ${segment}`}
+                onClick={() => onReveal(currentPath, false)}
+                className="min-w-0 truncate rounded-sm px-1 py-0.5 outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring text-muted-foreground"
               >
-                {file ? fileLabel : segment}
+                {segment}
               </button>
             )}
           </span>
