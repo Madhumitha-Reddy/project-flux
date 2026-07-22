@@ -45,6 +45,8 @@ import {
 } from "./workspace-sidebars";
 import { GraphView } from "./graph-view";
 import { PdfExportDialog } from "./pdf-export";
+import { SettingsDialog } from "./settings-dialog";
+import { useFluxSettings } from "./settings-store";
 import {
   findWorkspaceLeaf,
   mapWorkspaceLeaves,
@@ -204,6 +206,8 @@ function runWithToast<T>(operation: Promise<T>, feedback: AsyncFeedback) {
 }
 
 export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
+  const { settings } = useFluxSettings();
+  const { plugins, general } = settings;
   const [status, setStatus] = useState("Connecting…");
   const [performanceStats, setPerformanceStats] = useState<FluxPerformanceStats | null>(null);
   const [tabs, setTabs] = useState<WorkspaceTab[]>(() => [
@@ -222,6 +226,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   const [permanentDeleteRequest, setPermanentDeleteRequest] = useState<TrashEntry>();
   const [pdfExportDocument, setPdfExportDocument] = useState<DemoDocument | null>(null);
   const [pdfExportOpen, setPdfExportOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [leftSidebarPane, setLeftSidebarPane] = useState<LeftPane>("files");
   const [rightSidebarPane, setRightSidebarPane] = useState<RightPane>("backlinks");
   const [nextTabId, setNextTabId] = useState(2);
@@ -238,6 +243,27 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   const vaultFileVersionsRef = useRef(new Map<string, string>());
   const saveTimersRef = useRef(new Map<string, number>());
   const saveChainsRef = useRef(new Map<string, Promise<void>>());
+
+  useEffect(() => {
+    if (plugins["file-explorer"] === false && leftSidebarPane === "files") {
+      if (plugins["search"] !== false) setLeftSidebarPane("search");
+      else if (plugins["bookmarks"] !== false) setLeftSidebarPane("bookmarks");
+    } else if (plugins["search"] === false && leftSidebarPane === "search") {
+      if (plugins["file-explorer"] !== false) setLeftSidebarPane("files");
+      else if (plugins["bookmarks"] !== false) setLeftSidebarPane("bookmarks");
+    } else if (plugins["bookmarks"] === false && leftSidebarPane === "bookmarks") {
+      if (plugins["file-explorer"] !== false) setLeftSidebarPane("files");
+      else if (plugins["search"] !== false) setLeftSidebarPane("search");
+    }
+
+    if (plugins["graph-view"] === false) {
+      setWorkspaceRoot((root) =>
+        mapWorkspaceLeaves(root, (leaf) =>
+          leaf.view === "graph" ? { ...leaf, view: "editor" } : leaf
+        )
+      );
+    }
+  }, [plugins, leftSidebarPane, rightSidebarPane]);
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeLeaf = findWorkspaceLeaf(workspaceRoot, activeLeafId);
   const visibleActiveTab =
@@ -767,6 +793,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
 
   const deletePath = async (path: string) => {
     if (!runtime.client || !vault) return;
+    if (general.confirmDeleteNote && !window.confirm(`Are you sure you want to delete "${path}"?`)) return;
     try {
       await runWithToast(
         (async () => {
@@ -919,7 +946,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     return (
       <MarkdownEditor
         document={tab.document}
-        mode={tab.mode}
+        mode={plugins["live-preview"] === false ? "source" : tab.mode}
         onChange={(content) => {
           if (tab.document) scheduleSave(tab.id, tab.document, content);
           updateTab(tab.id, (current) =>
@@ -1663,6 +1690,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
                 side="left"
                 active={leftSidebarPane}
                 onChange={setLeftSidebarPane}
+                plugins={plugins}
               />
             }
             rightSidebarHeader={
@@ -1670,12 +1698,22 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
                 side="right"
                 active={rightSidebarPane}
                 onChange={setRightSidebarPane}
+                plugins={plugins}
               />
             }
             stickySidebar={
               <WorkspaceRibbon
-                onGraph={() => setLeafView(activeLeafId, "graph")}
-                onFiles={() => setLeafView(activeLeafId, "editor")}
+                onGraph={() => {
+                  if (plugins["graph-view"] !== false) setLeafView(activeLeafId, "graph");
+                }}
+                onFiles={() => {
+                  if (plugins["file-explorer"] !== false) setLeafView(activeLeafId, "editor");
+                }}
+                onCanvas={() => {
+                  if (plugins["canvas"] !== false) openDocument("Canvas");
+                }}
+                onSettings={() => setSettingsOpen(true)}
+                plugins={plugins}
               />
             }
             leftSidebar={
@@ -1911,6 +1949,11 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             open={pdfExportOpen}
             onOpenChange={setPdfExportOpen}
             onExport={runtime.exportPdf}
+          />
+          <SettingsDialog
+            open={settingsOpen}
+            onOpenChange={setSettingsOpen}
+            vaultName={vault?.name}
           />
           <Toaster />
         </TooltipProvider>
