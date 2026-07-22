@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import { AlertDialog, HoverCard } from "radix-ui";
 import type { FileEntry } from "@flux/bridge-contract";
+import type { BookmarkItem } from "./bookmark-store";
 import { getFrontmatterProperties, splitFrontmatter } from "./frontmatter";
 import type { DemoDocument } from "./markdown-editor";
 import {
@@ -42,6 +43,7 @@ import {
   type DocumentMention,
 } from "./link-index";
 import { VaultExplorer } from "./vault-explorer";
+import { cn } from "@flux/shared-ui";
 
 export type LeftPane = "files" | "search" | "bookmarks";
 export type RightPane =
@@ -606,85 +608,119 @@ function SearchPane({
 }
 
 function BookmarksPane({
-  activeTitle,
+  activeTitle: _activeTitle,
+  activePath: _activePath,
+  bookmarks = [],
+  groups = [],
   onOpenDocument,
+  onRemoveBookmark: _onRemoveBookmark,
+  onOpenAddBookmark,
+  onCreateGroup,
 }: {
   activeTitle: string;
-  onOpenDocument: (title: string) => void;
+  activePath?: string;
+  bookmarks?: BookmarkItem[];
+  groups?: string[];
+  onOpenDocument: (titleOrPath: string) => void;
+  onRemoveBookmark?: (id: string) => void;
+  onOpenAddBookmark?: () => void;
+  onCreateGroup?: (name: string) => void;
 }) {
-  const [groups, setGroups] = useState<Array<{ name: string; items: string[] }>>([
-    { name: "Writing", items: [] },
-    { name: "Reference", items: [] },
-  ]);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  const handleCreateGroup = () => {
+    const name = window.prompt("Enter new group name:");
+    if (name?.trim()) {
+      onCreateGroup?.(name.trim());
+    }
+  };
+
+  const renderBookmarkRow = (item: BookmarkItem, plClass = "pl-7") => (
+    <div
+      key={item.id}
+      className="group/bookmark flex w-full items-center rounded-md py-1.5 text-left hover:bg-accent/60"
+    >
+      <button
+        type="button"
+        onClick={() => onOpenDocument(item.path || item.title)}
+        className={cn(
+          "flex min-w-0 flex-1 items-center gap-2 text-left outline-none",
+          plClass
+        )}
+      >
+        <Bookmark className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="truncate">{item.title}</span>
+      </button>
+    </div>
+  );
+
+  const ungroupedBookmarks = bookmarks.filter(
+    (b) => !b.group || b.group === "None" || !groups.includes(b.group)
+  );
 
   return (
     <>
       <SidebarToolbar>
         <IconButton
           label="Bookmark active tab"
-          onClick={() =>
-            setGroups((current) =>
-              current.map((group, index) =>
-                index === 0 && !group.items.includes(activeTitle)
-                  ? { ...group, items: [...group.items, activeTitle] }
-                  : group
-              )
-            )
-          }
+          onClick={onOpenAddBookmark}
         >
           <BookmarkPlus className="size-3.5" />
         </IconButton>
         <IconButton
           label="New group"
-          onClick={() =>
-            setGroups((current) => [...current, { name: `Group ${current.length + 1}`, items: [] }])
-          }
+          onClick={handleCreateGroup}
         >
           <FolderPlus className="size-3.5" />
         </IconButton>
         <IconButton
           label="Collapse all"
-          onClick={() => setCollapsed(new Set(groups.map(({ name }) => name)))}
+          onClick={() => setCollapsed(new Set(groups))}
         >
           <ListCollapse className="size-3.5" />
         </IconButton>
       </SidebarToolbar>
       <div className="p-1.5 text-xs">
-        {groups.map((group) => (
-          <div key={group.name}>
-            <button
-              type="button"
-              onClick={() =>
-                setCollapsed((current) => {
-                  const next = new Set(current);
-                  if (next.has(group.name)) next.delete(group.name);
-                  else next.add(group.name);
-                  return next;
-                })
-              }
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-            >
-              <ChevronRight
-                className={`size-3.5 ${collapsed.has(group.name) ? "" : "rotate-90"}`}
-              />
-              {group.name}
-            </button>
-            {collapsed.has(group.name)
-              ? null
-              : group.items.map((title) => (
-                  <button
-                    key={title}
-                    type="button"
-                    onClick={() => onOpenDocument(title)}
-                    className="flex w-full items-center gap-2 rounded-md py-1.5 pl-7 pr-2 text-left hover:bg-accent/60"
-                  >
-                    <Bookmark className="size-3.5 text-muted-foreground" />
-                    <span className="truncate">{title}</span>
-                  </button>
-                ))}
+        {bookmarks.length === 0 ? (
+          <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+            No bookmarks added yet.<br />
+            Click <span className="font-medium text-foreground">Bookmark</span> in a note menu to add one.
           </div>
-        ))}
+        ) : (
+          <>
+            {groups.map((group) => {
+              const groupItems = bookmarks.filter((b) => b.group === group);
+              return (
+                <div key={group}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCollapsed((current) => {
+                        const next = new Set(current);
+                        if (next.has(group)) next.delete(group);
+                        else next.add(group);
+                        return next;
+                      })
+                    }
+                    className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                  >
+                    <ChevronRight
+                      className={`size-3.5 transition-transform ${collapsed.has(group) ? "" : "rotate-90"}`}
+                    />
+                    <span className="truncate">{group}</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                      {groupItems.length}
+                    </span>
+                  </button>
+                  {collapsed.has(group)
+                    ? null
+                    : groupItems.map((item) => renderBookmarkRow(item, "pl-7"))}
+                </div>
+              );
+            })}
+            {ungroupedBookmarks.map((item) => renderBookmarkRow(item, "pl-2"))}
+          </>
+        )}
       </div>
     </>
   );
@@ -706,6 +742,11 @@ function LeftSidebar({
   onArchivePath,
   onOpenTrash,
   onPreviewPath,
+  bookmarks,
+  bookmarkGroups,
+  onRemoveBookmark,
+  onOpenAddBookmark,
+  onCreateBookmarkGroup,
   expandedFolders,
   onExpandedFoldersChange,
 }: {
@@ -724,6 +765,11 @@ function LeftSidebar({
   onArchivePath?: (path: string) => void;
   onOpenTrash?: () => void;
   onPreviewPath?: (path: string) => Promise<string | null>;
+  bookmarks?: BookmarkItem[];
+  bookmarkGroups?: string[];
+  onRemoveBookmark?: (id: string) => void;
+  onOpenAddBookmark?: () => void;
+  onCreateBookmarkGroup?: (name: string) => void;
   expandedFolders?: string[];
   onExpandedFoldersChange?: (paths: string[]) => void;
 }) {
@@ -771,7 +817,16 @@ function LeftSidebar({
           className="flux-editor-scroll flux-sidebar-scroll h-full min-h-0 overflow-x-clip overflow-y-auto"
           hidden={pane !== "bookmarks"}
         >
-          <BookmarksPane activeTitle={activeTitle} onOpenDocument={onOpenDocument} />
+          <BookmarksPane
+            activeTitle={activeTitle}
+            activePath={activePath}
+            bookmarks={bookmarks}
+            groups={bookmarkGroups}
+            onOpenDocument={onOpenDocument}
+            onRemoveBookmark={onRemoveBookmark}
+            onOpenAddBookmark={onOpenAddBookmark}
+            onCreateGroup={onCreateBookmarkGroup}
+          />
         </div>
       </div>
     </section>
@@ -1259,6 +1314,11 @@ export function WorkspaceLeftSidebar({
   onArchivePath,
   onOpenTrash,
   onPreviewPath,
+  bookmarks,
+  bookmarkGroups,
+  onRemoveBookmark,
+  onOpenAddBookmark,
+  onCreateBookmarkGroup,
   expandedFolders,
   onExpandedFoldersChange,
 }: {
@@ -1277,6 +1337,11 @@ export function WorkspaceLeftSidebar({
   onArchivePath?: (path: string) => void;
   onOpenTrash?: () => void;
   onPreviewPath?: (path: string) => Promise<string | null>;
+  bookmarks?: BookmarkItem[];
+  bookmarkGroups?: string[];
+  onRemoveBookmark?: (id: string) => void;
+  onOpenAddBookmark?: () => void;
+  onCreateBookmarkGroup?: (name: string) => void;
   expandedFolders?: string[];
   onExpandedFoldersChange?: (paths: string[]) => void;
 }) {
@@ -1297,6 +1362,11 @@ export function WorkspaceLeftSidebar({
       onArchivePath={onArchivePath}
       onOpenTrash={onOpenTrash}
       onPreviewPath={onPreviewPath}
+      bookmarks={bookmarks}
+      bookmarkGroups={bookmarkGroups}
+      onRemoveBookmark={onRemoveBookmark}
+      onOpenAddBookmark={onOpenAddBookmark}
+      onCreateBookmarkGroup={onCreateBookmarkGroup}
       expandedFolders={expandedFolders}
       onExpandedFoldersChange={onExpandedFoldersChange}
     />
