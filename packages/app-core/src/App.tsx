@@ -305,12 +305,12 @@ function EditorPathBreadcrumb({
                       transition={{ type: "spring", stiffness: 150, damping: 22 }}
                       className="flex items-center min-w-0 overflow-hidden"
                     >
-                      {index ? <span className="select-none text-muted-foreground/35 mx-0.5 font-normal text-xs">/</span> : null}
+                      {index ? <span className="select-none text-muted-foreground/35 mx-[3px] font-normal text-xs">/</span> : null}
                       <button
                         type="button"
                         aria-label={`Reveal ${segment}`}
                         onClick={() => onReveal(currentPath, false)}
-                        className="min-w-0 truncate rounded-sm px-0.5 py-0.5 outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring text-muted-foreground"
+                        className="min-w-0 truncate rounded-sm px-[3px] py-0.5 outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring text-muted-foreground"
                       >
                         {segment}
                       </button>
@@ -328,7 +328,7 @@ function EditorPathBreadcrumb({
                       initial={{ opacity: 0, width: 0 }}
                       animate={{ opacity: 1, width: "auto" }}
                       exit={{ opacity: 0, width: 0 }}
-                      className="select-none text-muted-foreground/35 mx-0.5 font-normal text-xs"
+                      className="select-none text-muted-foreground/35 mx-[3px] font-normal text-xs"
                     >
                       /
                     </m.span>
@@ -349,7 +349,7 @@ function EditorPathBreadcrumb({
                           setIsFocused(false);
                         }
                       }}
-                      className="min-w-24 max-w-64 bg-transparent border-none text-center font-medium text-foreground outline-none focus:outline-none focus:ring-0 px-0.5 py-0.5"
+                      className="min-w-24 max-w-64 bg-transparent border-none text-center font-medium text-foreground outline-none focus:outline-none focus:ring-0 px-[3px] py-0.5"
                       style={{ font: "inherit" }}
                     />
                   ) : (
@@ -360,7 +360,7 @@ function EditorPathBreadcrumb({
                         e.stopPropagation();
                         setIsFocused(true);
                       }}
-                      className="min-w-0 truncate rounded-sm px-0.5 py-0.5 outline-none font-medium text-foreground cursor-pointer"
+                      className="min-w-0 truncate rounded-sm px-[3px] py-0.5 outline-none font-medium text-foreground cursor-pointer"
                       transition={{ type: "spring", stiffness: 120, damping: 20 }}
                     >
                       {fileLabel}

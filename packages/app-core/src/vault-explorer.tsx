@@ -344,11 +344,11 @@ export function VaultExplorer({
           setDropTarget(undefined);
         }}
         onPointerLeave={() => hidePreview(entry.path)}
-        className={`flex w-full min-w-0 max-w-full select-none items-center gap-1.5 overflow-hidden rounded-md py-1.5 pr-2 text-left text-xs outline-none hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-ring/50 ${
+        className={`flex w-full min-w-0 max-w-full select-none items-center gap-1.5 overflow-hidden rounded-md py-1.5 pr-2 text-left text-xs outline-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring/50 ${
           dropTarget === entry.path
             ? "bg-primary/10 text-foreground ring-1 ring-inset ring-primary/50"
             : entry.path === activePath
-              ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+              ? "bg-sidebar-selected text-sidebar-accent-foreground font-medium"
               : "text-muted-foreground"
         }`}
         style={{ paddingLeft: 8 + depth * 16 }}

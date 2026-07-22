@@ -78,7 +78,7 @@
   --sidebar-foreground: oklch(0.2 0 0);
   --sidebar-primary: oklch(0.25 0 0);
   --sidebar-primary-foreground: oklch(0.97 0 0);
-  --sidebar-accent: oklch(0.88 0 0);
+  --sidebar-accent: oklch(0.93 0 0);
   --sidebar-accent-foreground: oklch(0.2 0 0);
   --sidebar-border: oklch(0.89 0 0);
   --sidebar-ring: oklch(0.55 0 0);
@@ -115,7 +115,7 @@
   --sidebar-foreground: oklch(0.97 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);
   --sidebar-primary-foreground: oklch(0.97 0 0);
-  --sidebar-accent: oklch(0.33 0 0);
+  --sidebar-accent: oklch(0.285 0 0);
   --sidebar-accent-foreground: oklch(0.97 0 0);
   --sidebar-border: oklch(0.92 0 0 / 12%);
   --sidebar-ring: oklch(0.7 0 0);
@@ -614,4 +614,11 @@
   .flux-print-document {
     display: none;
   }
+}
+
+.bg-sidebar-selected {
+  background-color: oklch(0.88 0 0);
+}
+.dark .bg-sidebar-selected {
+  background-color: oklch(0.33 0 0);
 }
