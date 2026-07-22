@@ -66,3 +66,71 @@ test("reads raw binary file", async () => {
     "/api/v1/vaults/vault%2Fid/files/raw?path=folder%2Ftest.pdf"
   );
 });
+
+test("loads and saves durable workspace state", async () => {
+  const fetchMock = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === "PUT") return new Response(null, { status: 204 });
+    return Response.json({
+      windowId: "main",
+      vaultId: "vault/id",
+      state: { tabs: [{ path: "notes/a.md" }] },
+      updatedAt: "2026-07-21T00:00:00Z",
+    });
+  });
+  const client = new WebFluxClient("/api/v1", fetchMock as typeof fetch);
+
+  await expect(client.getWorkspace("main", "vault/id")).resolves.toMatchObject({
+    vaultId: "vault/id",
+  });
+  await client.saveWorkspace("main", "vault/id", { activePath: "notes/a.md" });
+
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    1,
+    "/api/v1/workspace-sessions/main?vaultId=vault%2Fid",
+    { headers: { "Content-Type": "application/json" } }
+  );
+  expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/workspace-sessions/main", {
+    method: "PUT",
+    body: JSON.stringify({ vaultId: "vault/id", state: { activePath: "notes/a.md" } }),
+    headers: { "Content-Type": "application/json" },
+  });
+});
+
+test("discovers vaults registered inside the server storage root", async () => {
+  const fetchMock = mock(async () =>
+    Response.json([{ vaultId: "vault/id", name: "Notes", path: "Notes" }])
+  );
+  const client = new WebFluxClient("/api/v1", fetchMock as typeof fetch);
+
+  await expect(client.listAvailableVaults()).resolves.toEqual([
+    { vaultId: "vault/id", name: "Notes", path: "Notes" },
+  ]);
+  expect(fetchMock).toHaveBeenCalledWith("/api/v1/vaults/available", {
+    headers: { "Content-Type": "application/json" },
+  });
+});
+
+test("requests an explicit derived-index rebuild", async () => {
+  const fetchMock = mock(async () => Response.json({ accepted: true }, { status: 202 }));
+  const client = new WebFluxClient("/api/v1", fetchMock as typeof fetch);
+
+  await client.rebuildIndex("vault/id");
+  expect(fetchMock).toHaveBeenCalledWith("/api/v1/vaults/vault%2Fid/index/rebuild", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+});
+
+test("loads path-keyed vault graph", async () => {
+  const graph = {
+    nodes: [{ id: "one/route.ts", path: "one/route.ts", label: "one/route.ts", kind: "text" }],
+    edges: [],
+  };
+  const fetchMock = mock(async () => Response.json(graph));
+  const client = new WebFluxClient("/api/v1", fetchMock as typeof fetch);
+
+  await expect(client.getGraph("vault/id")).resolves.toEqual(graph);
+  expect(fetchMock).toHaveBeenCalledWith("/api/v1/vaults/vault%2Fid/graph", {
+    headers: { "Content-Type": "application/json" },
+  });
+});

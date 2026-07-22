@@ -42,6 +42,7 @@ export interface FluxLayoutProps extends Omit<HTMLAttributes<HTMLDivElement>, "t
   resizeIndicatorClassName?: string;
   storageKey?: string | false;
   onLayoutChange?: (state: FluxLayoutState) => void;
+  layoutState?: FluxLayoutState;
   mainExtendsIntoTitlebar?: boolean;
 }
 
@@ -227,6 +228,7 @@ export function FluxLayout({
   resizeIndicatorClassName,
   storageKey = "flux-layout",
   onLayoutChange,
+  layoutState,
   mainExtendsIntoTitlebar = false,
   className,
   style,
@@ -244,6 +246,7 @@ export function FluxLayout({
     right: rightSidebarOptions,
     storageKey,
     onStateChange: onLayoutChange,
+    initialState: layoutState,
   });
 
   useEffect(() => {

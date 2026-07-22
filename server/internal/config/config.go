@@ -1,24 +1,54 @@
 package config
 
-import "os"
+import (
+	"os"
+	"path/filepath"
+)
 
 type Config struct {
 	Environment   string
 	Host          string
 	VaultPath     string
+	VaultRoot     string
 	AllowedOrigin string
 	Port          string
+	AppDataDir    string
+	DesktopToken  string
 }
 
 func Load() *Config {
 	environment := getEnv("ENVIRONMENT", "development")
+	appDataDir := getEnv("FLUX_APP_DATA_DIR", defaultAppDataDir())
 	return &Config{
 		Environment:   environment,
 		Host:          getEnv("HOST", defaultHost(environment)),
 		VaultPath:     os.Getenv("FLUX_VAULT_PATH"),
+		VaultRoot:     defaultVaultRoot(environment, appDataDir),
 		AllowedOrigin: getEnv("CORS_ALLOWED_ORIGIN", "http://localhost:3000"),
 		Port:          getEnv("PORT", "8080"),
+		AppDataDir:    appDataDir,
+		DesktopToken:  os.Getenv("FLUX_DESKTOP_TOKEN"),
 	}
+}
+
+func defaultVaultRoot(environment, appDataDir string) string {
+	if configured := os.Getenv("FLUX_VAULT_ROOT"); configured != "" {
+		return configured
+	}
+	if environment == "production" && os.Getenv("FLUX_VAULT_PATH") == "" {
+		return "/data/vaults"
+	}
+	if environment == "development" && os.Getenv("FLUX_VAULT_PATH") == "" {
+		return filepath.Join(appDataDir, "vaults")
+	}
+	return ""
+}
+
+func defaultAppDataDir() string {
+	if directory, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(directory, "Flux")
+	}
+	return filepath.Join(os.TempDir(), "flux-app-data")
 }
 
 func defaultHost(environment string) string {

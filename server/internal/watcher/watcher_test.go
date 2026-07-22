@@ -9,10 +9,10 @@ import (
 
 func TestWatcherReportsExternalChange(t *testing.T) {
 	root := t.TempDir()
-	changed := make(chan struct{}, 1)
-	watcher, err := Start(root, func() {
+	changed := make(chan []Event, 1)
+	watcher, err := Start(root, func(events []Event) {
 		select {
-		case changed <- struct{}{}:
+		case changed <- events:
 		default:
 		}
 	})
@@ -24,7 +24,10 @@ func TestWatcherReportsExternalChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case <-changed:
+	case events := <-changed:
+		if len(events) != 1 || events[0].Path != "external.md" || (events[0].Op != OpCreate && events[0].Op != OpWrite) {
+			t.Fatalf("unexpected events: %#v", events)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("watcher did not report external change")
 	}
@@ -33,7 +36,7 @@ func TestWatcherReportsExternalChange(t *testing.T) {
 func TestWatcherAddsNewDirectoriesRecursively(t *testing.T) {
 	root := t.TempDir()
 	changed := make(chan struct{}, 4)
-	watcher, err := Start(root, func() {
+	watcher, err := Start(root, func(events []Event) {
 		select {
 		case changed <- struct{}{}:
 		default:

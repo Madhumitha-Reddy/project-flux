@@ -1,7 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, type WebContents } from "electron";
 import { autoUpdater } from "electron-updater";
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import * as path from "path";
 
@@ -12,8 +14,31 @@ const vaultEventStreams = new Map<string, AbortController>();
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const isDev = Boolean(devServerUrl);
-const backendOrigin = process.env.FLUX_BACKEND_URL ?? "http://127.0.0.1:8080";
-const backendStartupAttempts = 50;
+const externalBackendOrigin = process.env.FLUX_BACKEND_URL;
+let backendOrigin = externalBackendOrigin ?? "";
+let backendToken = "";
+const backendStartupAttempts = 300;
+
+async function availableLoopbackPort() {
+  return new Promise<number>((resolve, reject) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("Could not allocate backend port"));
+        return;
+      }
+      server.close((error) => (error ? reject(error) : resolve(address.port)));
+    });
+  });
+}
+
+function backendHeaders() {
+  return backendToken ? { "X-Flux-Desktop-Token": backendToken } : undefined;
+}
 
 function streamKey(sender: WebContents, watcherId: string) {
   return `${sender.id}:${watcherId}`;
@@ -43,7 +68,7 @@ async function consumeVaultEvents(
     try {
       const response = await fetch(
         `${backendOrigin}/api/v1/vaults/${encodeURIComponent(vaultId)}/events`,
-        { signal }
+        { signal, headers: backendHeaders() }
       );
       if (!response.ok || !response.body) {
         throw new Error(`Vault event stream failed with status ${response.status}`);
@@ -72,7 +97,7 @@ async function consumeVaultEvents(
           if (eventName === "revision" && data) {
             const payload = JSON.parse(data) as { revision?: unknown };
             if (typeof payload.revision === "number" && !sender.isDestroyed()) {
-              sender.send(`vault-revision:${watcherId}`, payload.revision);
+              sender.send(`vault-revision:${watcherId}`, payload);
             }
           }
           boundary = buffer.indexOf("\n\n");
@@ -88,8 +113,9 @@ async function consumeVaultEvents(
 }
 
 async function backendReady() {
+  if (!backendOrigin) return false;
   try {
-    const response = await fetch(`${backendOrigin}/api/v1/status`);
+    const response = await fetch(`${backendOrigin}/api/v1/status`, { headers: backendHeaders() });
     return response.ok;
   } catch {
     return false;
@@ -97,21 +123,37 @@ async function backendReady() {
 }
 
 async function ensureBackend() {
-  if (await backendReady()) return;
+  if (externalBackendOrigin) {
+    if (await backendReady()) return;
+    throw new Error(`Configured FLUX backend is unavailable at ${externalBackendOrigin}`);
+  }
+
+  const port = await availableLoopbackPort();
+  backendOrigin = `http://127.0.0.1:${port}`;
+  backendToken = randomBytes(32).toString("hex");
+  const backendEnvironment = {
+    ...process.env,
+    ENVIRONMENT: "desktop",
+    HOST: "127.0.0.1",
+    PORT: String(port),
+    FLUX_APP_DATA_DIR: app.getPath("userData"),
+    FLUX_DESKTOP_TOKEN: backendToken,
+  };
   if (isDev) {
+    // Vite restarts this process; go run recompiles backend changes on reload.
     const serverDirectory = path.resolve(currentDirectory, "../../../server");
     backendProcess = spawn(
       process.env.GO_BIN ?? "/usr/local/go/bin/go",
-      ["-C", serverDirectory, "run", "."],
+      ["-C", serverDirectory, "run", "-tags", "sqlite_fts5", "."],
       {
-        env: { ...process.env, ENVIRONMENT: "development", HOST: "127.0.0.1", PORT: "8080" },
+        env: backendEnvironment,
         stdio: "inherit",
         detached: process.platform !== "win32",
       }
     );
   } else {
     backendProcess = spawn(path.join(process.resourcesPath, "flux-server"), [], {
-      env: { ...process.env, ENVIRONMENT: "desktop", HOST: "127.0.0.1", PORT: "8080" },
+      env: backendEnvironment,
       stdio: "inherit",
     });
   }
@@ -145,7 +187,6 @@ function createWindow(targetUrl?: string) {
 
   if (devServerUrl) {
     void window.loadURL(targetUrl ?? devServerUrl);
-    window.webContents.openDevTools();
   } else {
     if (targetUrl?.startsWith("file:")) void window.loadFile(fileURLToPath(targetUrl));
     else void window.loadFile(path.join(currentDirectory, "../dist/index.html"));
@@ -193,6 +234,10 @@ ipcMain.handle("ping", async () => {
   return "pong";
 });
 
+ipcMain.handle("get-window-id", (event) => {
+  return mainWindow?.webContents.id === event.sender.id ? "main" : `window-${event.sender.id}`;
+});
+
 ipcMain.handle("select-vault-directory", async (_event, mode: unknown) => {
   if (mode !== "open" && mode !== "create") throw new TypeError("Invalid vault selection mode");
   const options = {
@@ -217,7 +262,7 @@ ipcMain.handle("flux-fetch", async (_event, request: unknown) => {
   }
   const response = await fetch(new URL(value.url, backendOrigin), {
     method,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...backendHeaders() },
     body: typeof value.body === "string" ? value.body : undefined,
   });
   const contentType = response.headers.get("content-type") ?? "application/json";

@@ -124,7 +124,7 @@ export function FluxTab({
             className={cn(
               "flux-tab-content flex h-8 min-w-0 flex-1 items-center rounded-md px-1",
               !active && "group-hover/tab:bg-[var(--tab-hover)]",
-              (active || pinned) && "gap-1"
+              (active || pinned || closeable) && "gap-1"
             )}
           >
             <span className="min-w-0 flex-1 truncate rounded-sm text-left leading-5 group-focus-visible/tab:ring-1 group-focus-visible/tab:ring-ring/50">
@@ -142,8 +142,8 @@ export function FluxTab({
                 type="button"
                 aria-label={`Close ${typeof children === "string" ? children : "tab"}`}
                 className={cn(
-                  "grid shrink-0 place-items-center overflow-hidden rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground",
-                  active ? "size-5 opacity-100" : "size-0 opacity-0"
+                  "grid size-5 shrink-0 place-items-center overflow-hidden rounded-sm text-muted-foreground transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-ring/50",
+                  active ? "opacity-100" : "opacity-0 group-hover/tab:opacity-100"
                 )}
                 onClick={onClose}
               >

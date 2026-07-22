@@ -706,6 +706,8 @@ function LeftSidebar({
   onArchivePath,
   onOpenTrash,
   onPreviewPath,
+  expandedFolders,
+  onExpandedFoldersChange,
 }: {
   activeTitle: string;
   pane: LeftPane;
@@ -722,6 +724,8 @@ function LeftSidebar({
   onArchivePath?: (path: string) => void;
   onOpenTrash?: () => void;
   onPreviewPath?: (path: string) => Promise<string | null>;
+  expandedFolders?: string[];
+  onExpandedFoldersChange?: (paths: string[]) => void;
 }) {
   return (
     <section
@@ -744,6 +748,8 @@ function LeftSidebar({
               onArchive={(path) => onArchivePath?.(path)}
               onOpenTrash={() => onOpenTrash?.()}
               onPreview={(path) => onPreviewPath?.(path) ?? Promise.resolve(null)}
+              expandedFolders={expandedFolders}
+              onExpandedFoldersChange={onExpandedFoldersChange}
             />
           ) : (
             <FileExplorer
@@ -866,7 +872,7 @@ function RightContent({
     );
   }
   if (pane === "backlinks") {
-    const activeTitle = activeDocument?.title ?? "Untitled";
+    const activeTitle = activeDocument?.path ?? activeDocument?.title ?? "Untitled";
     const groupMentions = (mentions: DocumentMention[]) => {
       const grouped = new Map<string, DocumentMention[]>();
       for (const mention of mentions) {
@@ -972,7 +978,7 @@ function RightContent({
     );
   }
   if (pane === "outgoing") {
-    const activeTitle = activeDocument?.title ?? "Untitled";
+    const activeTitle = activeDocument?.path ?? activeDocument?.title ?? "Untitled";
     const outgoing = [...(buildLinkIndex(documents).outgoing.get(activeTitle) ?? new Set<string>())]
       .filter((title) => title.toLocaleLowerCase().includes(filter.toLocaleLowerCase()))
       .sort((a, b) => (descending ? b.localeCompare(a) : a.localeCompare(b)));
@@ -1253,6 +1259,8 @@ export function WorkspaceLeftSidebar({
   onArchivePath,
   onOpenTrash,
   onPreviewPath,
+  expandedFolders,
+  onExpandedFoldersChange,
 }: {
   activeTitle: string;
   pane: LeftPane;
@@ -1269,6 +1277,8 @@ export function WorkspaceLeftSidebar({
   onArchivePath?: (path: string) => void;
   onOpenTrash?: () => void;
   onPreviewPath?: (path: string) => Promise<string | null>;
+  expandedFolders?: string[];
+  onExpandedFoldersChange?: (paths: string[]) => void;
 }) {
   return (
     <LeftSidebar
@@ -1287,6 +1297,8 @@ export function WorkspaceLeftSidebar({
       onArchivePath={onArchivePath}
       onOpenTrash={onOpenTrash}
       onPreviewPath={onPreviewPath}
+      expandedFolders={expandedFolders}
+      onExpandedFoldersChange={onExpandedFoldersChange}
     />
   );
 }

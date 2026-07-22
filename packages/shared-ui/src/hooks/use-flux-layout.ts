@@ -33,6 +33,7 @@ interface UseFluxLayoutOptions {
   right?: FluxSidebarOptions;
   storageKey?: string | false;
   onStateChange?: (state: FluxLayoutState) => void;
+  initialState?: FluxLayoutState;
 }
 
 const DEFAULT_SIDEBAR: ResolvedSidebarOptions = {
@@ -69,13 +70,26 @@ function isSidebarState(value: unknown): value is FluxSidebarState {
 function createInitialState(
   left: ResolvedSidebarOptions,
   right: ResolvedSidebarOptions,
-  storageKey: string | false
+  storageKey: string | false,
+  initialState?: FluxLayoutState
 ): FluxLayoutState {
   const fallback: FluxLayoutState = {
     left: { width: left.defaultWidth, collapsed: left.defaultCollapsed },
     right: { width: right.defaultWidth, collapsed: right.defaultCollapsed },
   };
 
+  if (initialState) {
+    return {
+      left: {
+        width: clamp(initialState.left.width, left.minWidth, left.maxWidth),
+        collapsed: initialState.left.collapsed,
+      },
+      right: {
+        width: clamp(initialState.right.width, right.minWidth, right.maxWidth),
+        collapsed: initialState.right.collapsed,
+      },
+    };
+  }
   if (!storageKey || typeof window === "undefined") return fallback;
 
   try {
@@ -104,11 +118,12 @@ export function useFluxLayout({
   right: rightOptions,
   storageKey = "flux-layout",
   onStateChange,
+  initialState,
 }: UseFluxLayoutOptions = {}) {
   const left = useMemo(() => resolveOptions(leftOptions), [leftOptions]);
   const right = useMemo(() => resolveOptions(rightOptions), [rightOptions]);
   const [state, setState] = useState<FluxLayoutState>(() =>
-    createInitialState(left, right, storageKey)
+    createInitialState(left, right, storageKey, initialState)
   );
 
   useEffect(() => {

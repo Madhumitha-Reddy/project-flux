@@ -1,4 +1,5 @@
 import { WebFluxClient } from "@flux/client-web";
+import type { VaultChange } from "@flux/bridge-contract";
 
 export interface DesktopFluxBridge {
   fluxFetch(request: {
@@ -9,6 +10,11 @@ export interface DesktopFluxBridge {
   watchVaultRevision(
     vaultId: string,
     onRevision: (revision: number) => void,
+    onError?: (message: string) => void
+  ): () => void;
+  watchVaultChanges(
+    vaultId: string,
+    onChange: (change: VaultChange) => void,
     onError?: (message: string) => void
   ): () => void;
 }
@@ -37,7 +43,19 @@ export class DesktopFluxClient extends WebFluxClient {
     onRevision: (revision: number) => void,
     onError?: (error: Error) => void
   ) {
-    return this.bridge.watchVaultRevision(vaultId, onRevision, (message) =>
+    return this.bridge.watchVaultChanges(
+      vaultId,
+      (change) => onRevision(change.revision),
+      (message) => onError?.(new Error(message))
+    );
+  }
+
+  override watchVaultChanges(
+    vaultId: string,
+    onChange: (change: VaultChange) => void,
+    onError?: (error: Error) => void
+  ) {
+    return this.bridge.watchVaultChanges(vaultId, onChange, (message) =>
       onError?.(new Error(message))
     );
   }

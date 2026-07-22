@@ -38,14 +38,18 @@ func TestListHidesMacMetadata(t *testing.T) {
 	}
 }
 
-func TestListIgnoresHeavyDirectoriesAtAnyDepth(t *testing.T) {
+func TestListShowsSupportedFilesInsideVisibleProjectDirectories(t *testing.T) {
 	root := t.TempDir()
 	for _, candidate := range []string{
 		"node_modules/top.md",
 		"packages/app/node_modules/nested.md",
 		"packages/app/.cache/cached.md",
+		"packages/app/.next/server/chunk.js",
+		"packages/app/coverage/report.json",
 		"packages/app/dist/output.md",
 		"packages/app/src/visible.md",
+		"packages/app/src/route.ts",
+		"attachments/image.png",
 	} {
 		path := filepath.Join(root, filepath.FromSlash(candidate))
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -60,19 +64,45 @@ func TestListIgnoresHeavyDirectoriesAtAnyDepth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	paths := make(map[string]bool, len(entries))
 	for _, entry := range entries {
-		if IsIgnored(entry.Path) {
-			t.Fatalf("ignored entry leaked into listing: %s", entry.Path)
+		paths[entry.Path] = true
+	}
+	for _, expected := range []string{
+		"node_modules/top.md",
+		"packages/app/node_modules/nested.md",
+		"packages/app/dist/output.md",
+		"packages/app/src/visible.md",
+		"attachments/image.png",
+	} {
+		if !paths[expected] {
+			t.Fatalf("supported file missing: %s", expected)
 		}
 	}
-	found := false
-	for _, entry := range entries {
-		if entry.Path == "packages/app/src/visible.md" {
-			found = true
+	for _, hidden := range []string{
+		"packages/app/.cache/cached.md",
+		"packages/app/.next/server/chunk.js",
+		"packages/app/coverage/report.json",
+		"packages/app/src/route.ts",
+	} {
+		if paths[hidden] {
+			t.Fatalf("unsupported or hidden file leaked into listing: %s", hidden)
 		}
 	}
-	if !found {
-		t.Fatal("visible source file missing")
+}
+
+func TestSupportedVaultFormatsMatchObsidian(t *testing.T) {
+	for _, path := range []string{
+		"note.md", "board.canvas", "table.base", "image.avif", "sound.opus", "movie.mkv", "paper.pdf",
+	} {
+		if !IsSupportedVaultFile(path) {
+			t.Fatalf("expected supported file: %s", path)
+		}
+	}
+	for _, path := range []string{"route.ts", "data.json", "note.markdown", "icon.ico", "notes.txt"} {
+		if IsSupportedVaultFile(path) {
+			t.Fatalf("unsupported file treated as vault file: %s", path)
+		}
 	}
 }
 

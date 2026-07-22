@@ -268,7 +268,7 @@ export function FluxEditorPane({
           </button>
         </div>
 
-        <h1 className="pointer-events-none absolute inset-x-20 truncate text-center text-xs font-medium text-foreground">
+        <h1 className="absolute inset-x-20 truncate text-center text-xs font-medium text-foreground">
           {title}
         </h1>
 
