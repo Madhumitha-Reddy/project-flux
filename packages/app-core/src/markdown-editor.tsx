@@ -722,13 +722,13 @@ export function MarkdownEditor({
   const { frontmatter, body } = splitFrontmatter(document.content);
   const backlinkGroups = useMemo(() => {
     const grouped = new Map<string, ReturnType<typeof linkedMentionsFor>>();
-    for (const mention of linkedMentionsFor(documents, document.title)) {
+    for (const mention of linkedMentionsFor(documents, document.path ?? document.title)) {
       const group = grouped.get(mention.source) ?? [];
       group.push(mention);
       grouped.set(mention.source, group);
     }
     return [...grouped];
-  }, [document.title, documents]);
+  }, [document.path, document.title, documents]);
 
   return (
     <div

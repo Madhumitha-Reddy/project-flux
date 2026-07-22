@@ -1,3 +1,5 @@
+//go:build !darwin
+
 package watcher
 
 import (
@@ -13,29 +15,35 @@ import (
 )
 
 const debounce = 250 * time.Millisecond
-const reconciliationInterval = 5 * time.Minute
 
 type Watcher struct {
 	inner    *fsnotify.Watcher
 	root     string
-	onChange func()
+	onChange func([]Event)
 	done     chan struct{}
 	close    sync.Once
 	wait     sync.WaitGroup
 }
 
-func Start(root string, onChange func()) (*Watcher, error) {
+// Start watches root immediately, then discovers nested directories without blocking vault open.
+func Start(root string, onChange func([]Event)) (*Watcher, error) {
 	inner, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
 	}
-	watcher := &Watcher{inner: inner, root: root, onChange: onChange, done: make(chan struct{})}
-	if err := watcher.addTree(root); err != nil {
-		inner.Close()
+	if err := inner.Add(root); err != nil {
+		_ = inner.Close()
 		return nil, err
 	}
-	watcher.wait.Add(1)
+	watcher := &Watcher{inner: inner, root: root, onChange: onChange, done: make(chan struct{})}
+	watcher.wait.Add(2)
 	go watcher.run()
+	go func() {
+		defer watcher.wait.Done()
+		if err := watcher.addTree(root); err != nil {
+			watcher.onChange([]Event{{Op: OpReconcile}})
+		}
+	}()
 	return watcher, nil
 }
 
@@ -47,10 +55,20 @@ func (w *Watcher) Close() error {
 
 func (w *Watcher) run() {
 	defer w.wait.Done()
-	reconcile := time.NewTicker(reconciliationInterval)
-	defer reconcile.Stop()
+	pending := make(map[string]Op)
 	var timer *time.Timer
 	var timerChannel <-chan time.Time
+	flush := func() {
+		if len(pending) == 0 {
+			return
+		}
+		events := make([]Event, 0, len(pending))
+		for path, op := range pending {
+			events = append(events, Event{Path: path, Op: op})
+		}
+		pending = make(map[string]Op)
+		w.onChange(events)
+	}
 	for {
 		select {
 		case event, ok := <-w.inner.Events:
@@ -60,11 +78,21 @@ func (w *Watcher) run() {
 			if w.ignored(event.Name) {
 				continue
 			}
-			if event.Has(fsnotify.Create) {
-				if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+			relative, err := filepath.Rel(w.root, event.Name)
+			if err != nil {
+				continue
+			}
+			relative = filepath.ToSlash(relative)
+			op := OpWrite
+			if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+				op = OpRemove
+			} else if event.Has(fsnotify.Create) {
+				op = OpCreate
+				if info, statErr := os.Stat(event.Name); statErr == nil && info.IsDir() {
 					_ = w.addTree(event.Name)
 				}
 			}
+			pending[relative] = merge(pending[relative], op)
 			if timer == nil {
 				timer = time.NewTimer(debounce)
 			} else {
@@ -79,14 +107,13 @@ func (w *Watcher) run() {
 			timerChannel = timer.C
 		case <-timerChannel:
 			timerChannel = nil
-			w.onChange()
+			flush()
 		case _, ok := <-w.inner.Errors:
 			if !ok {
 				return
 			}
-			w.onChange()
-		case <-reconcile.C:
-			w.onChange()
+			flush()
+			w.onChange([]Event{{Op: OpReconcile}})
 		case <-w.done:
 			if timer != nil {
 				timer.Stop()
@@ -113,8 +140,15 @@ func (w *Watcher) addTree(root string) error {
 			}
 			return nil
 		}
-		if entry.IsDir() {
-			return w.inner.Add(current)
+		if entry.IsDir() && current != w.root {
+			select {
+			case <-w.done:
+				return filepath.SkipAll
+			default:
+			}
+			if err := w.inner.Add(current); err != nil && !strings.Contains(err.Error(), "already exists") {
+				return err
+			}
 		}
 		return nil
 	})

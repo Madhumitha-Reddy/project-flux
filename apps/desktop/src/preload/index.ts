@@ -1,9 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { VaultChange } from "@flux/bridge-contract";
 
 let nextWatcherId = 0;
 
 contextBridge.exposeInMainWorld("electronAPI", {
   ping: () => ipcRenderer.invoke("ping"),
+  getWindowId: () => ipcRenderer.invoke("get-window-id"),
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
   getAppVersion: () => ipcRenderer.invoke("get-app-version"),
   getPerformanceStats: () => ipcRenderer.invoke("get-performance-stats"),
@@ -28,8 +30,28 @@ contextBridge.exposeInMainWorld("electronAPI", {
     const watcherId = `${Date.now()}-${++nextWatcherId}`;
     const revisionChannel = `vault-revision:${watcherId}`;
     const errorChannel = `vault-revision-error:${watcherId}`;
-    const handleRevision = (_event: Electron.IpcRendererEvent, revision: number) =>
-      onRevision(revision);
+    const handleRevision = (_event: Electron.IpcRendererEvent, change: VaultChange) =>
+      onRevision(change.revision);
+    const handleError = (_event: Electron.IpcRendererEvent, message: string) => onError?.(message);
+    ipcRenderer.on(revisionChannel, handleRevision);
+    ipcRenderer.on(errorChannel, handleError);
+    ipcRenderer.send("watch-vault-revision", { watcherId, vaultId });
+    return () => {
+      ipcRenderer.off(revisionChannel, handleRevision);
+      ipcRenderer.off(errorChannel, handleError);
+      ipcRenderer.send("unwatch-vault-revision", watcherId);
+    };
+  },
+  watchVaultChanges: (
+    vaultId: string,
+    onChange: (change: VaultChange) => void,
+    onError?: (message: string) => void
+  ) => {
+    const watcherId = `${Date.now()}-${++nextWatcherId}`;
+    const revisionChannel = `vault-revision:${watcherId}`;
+    const errorChannel = `vault-revision-error:${watcherId}`;
+    const handleRevision = (_event: Electron.IpcRendererEvent, change: VaultChange) =>
+      onChange(change);
     const handleError = (_event: Electron.IpcRendererEvent, message: string) => onError?.(message);
     ipcRenderer.on(revisionChannel, handleRevision);
     ipcRenderer.on(errorChannel, handleError);

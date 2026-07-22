@@ -38,16 +38,40 @@ function aliasesFor(document: DemoDocument) {
     .map((value) => value.toLocaleLowerCase());
 }
 
+function documentId(document: DemoDocument) {
+  return document.path ?? document.title;
+}
+
 function resolverFor(documents: DemoDocument[]) {
-  const known = new Map<string, string>();
+  const candidates = new Map<string, Set<string>>();
   for (const document of documents) {
-    for (const alias of aliasesFor(document)) if (!known.has(alias)) known.set(alias, document.title);
+    for (const alias of aliasesFor(document)) {
+      const ids = candidates.get(alias) ?? new Set<string>();
+      ids.add(documentId(document));
+      candidates.set(alias, ids);
+    }
   }
-  return (rawTarget: string) => {
+  return (rawTarget: string, source?: DemoDocument) => {
     if (/^[a-z][a-z\d+.-]*:/i.test(rawTarget)) return undefined;
     const target = normalizeTarget(rawTarget).toLocaleLowerCase();
-    return known.get(target) ?? known.get(target.slice(target.lastIndexOf("/") + 1));
+    const exact = candidates.get(target);
+    if (exact?.size === 1) return [...exact][0];
+    if (source?.path) {
+      const directory = normalizeTarget(source.path).split("/").slice(0, -1).join("/");
+      const relative = normalizeTarget(`${directory}/${target}`).toLocaleLowerCase();
+      const relativeMatches = candidates.get(relative);
+      if (relativeMatches?.size === 1) return [...relativeMatches][0];
+    }
+    const basename = candidates.get(target.slice(target.lastIndexOf("/") + 1));
+    return basename?.size === 1 ? [...basename][0] : undefined;
   };
+}
+
+function targetId(documents: DemoDocument[], identifier: string) {
+  const exact = documents.find((document) => documentId(document) === identifier);
+  if (exact) return documentId(exact);
+  const matches = documents.filter((document) => document.title === identifier);
+  return matches.length === 1 ? documentId(matches[0]) : identifier;
 }
 
 function rawLinks(content: string) {
@@ -77,7 +101,9 @@ function maskMarkdown(content: string) {
     .replace(/%%[\s\S]*?%%/g, preserveLines);
   for (const link of rawLinks(masked)) {
     masked =
-      masked.slice(0, link.index) + " ".repeat(link.length) + masked.slice(link.index + link.length);
+      masked.slice(0, link.index) +
+      " ".repeat(link.length) +
+      masked.slice(link.index + link.length);
   }
   return masked;
 }
@@ -92,12 +118,17 @@ export function linkedTitles(content: string) {
 
 export function linkedMentionsFor(documents: DemoDocument[], targetTitle: string) {
   const resolve = resolverFor(documents);
+  const wanted = targetId(documents, targetTitle);
   const mentions: DocumentMention[] = [];
   for (const document of documents) {
     for (const link of rawLinks(document.content)) {
-      const target = resolve(link.target);
-      if (target !== targetTitle) continue;
-      mentions.push({ source: document.title, target, ...locationFor(document.content, link.index) });
+      const target = resolve(link.target, document);
+      if (target !== wanted) continue;
+      mentions.push({
+        source: documentId(document),
+        target,
+        ...locationFor(document.content, link.index),
+      });
     }
   }
   return mentions;
@@ -111,13 +142,13 @@ export function unlinkedMentionsFor(documents: DemoDocument[], targetTitle: stri
     "giu"
   );
   for (const document of documents) {
-    if (document.title === targetTitle) continue;
+    if (documentId(document) === targetId(documents, targetTitle)) continue;
     const searchable = maskMarkdown(document.content);
     for (const match of searchable.matchAll(pattern)) {
       const index = match.index + match[1].length;
       mentions.push({
-        source: document.title,
-        target: targetTitle,
+        source: documentId(document),
+        target: targetId(documents, targetTitle),
         ...locationFor(document.content, index),
       });
     }
@@ -134,15 +165,16 @@ export function buildLinkIndex(documents: DemoDocument[]) {
   for (const document of documents) {
     const targets = new Set(
       rawLinks(document.content)
-        .map((link) => resolve(link.target))
+        .map((link) => resolve(link.target, document))
         .filter((target): target is string => Boolean(target))
     );
+    const source = documentId(document);
     for (const target of targets) {
-      edges.push({ source: document.title, target });
-      if (!outgoing.has(document.title)) outgoing.set(document.title, new Set());
+      edges.push({ source, target });
+      if (!outgoing.has(source)) outgoing.set(source, new Set());
       if (!backlinks.has(target)) backlinks.set(target, new Set());
-      outgoing.get(document.title)?.add(target);
-      backlinks.get(target)?.add(document.title);
+      outgoing.get(source)?.add(target);
+      backlinks.get(target)?.add(source);
     }
   }
 

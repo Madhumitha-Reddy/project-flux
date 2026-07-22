@@ -30,15 +30,16 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
+import { Application, BitmapText, Color, Container, Graphics, Rectangle } from "pixi.js";
 import { FluxEditorPane } from "@flux/shared-ui/components/workspace-tab";
 import type { DemoDocument } from "./markdown-editor";
 import { buildLinkIndex, linkedTitles } from "./link-index";
-import type { FileEntry } from "@flux/bridge-contract";
+import type { VaultGraph } from "@flux/bridge-contract";
 
 interface GraphViewProps {
   documents: DemoDocument[];
-  attachments?: FileEntry[];
-  activeTitle?: string;
+  vaultGraph?: VaultGraph | null;
+  activePath?: string;
   bookmarked: boolean;
   onBookmarkChange: (value: boolean) => void;
   onOpenDocument: (title: string) => void;
@@ -96,16 +97,35 @@ interface GraphLink extends SimulationLinkDatum<GraphNode> {
 interface GraphDrag {
   node: GraphNode;
   pointerId: number;
+  startX: number;
+  startY: number;
   x: number;
   y: number;
   at: number;
   vx: number;
   vy: number;
+  moved: boolean;
 }
 
 const WIDTH = 960;
 const HEIGHT = 640;
 const TAGS_PATTERN = /(?:^|\n)tags:\s*\[([^\]]+)\]/i;
+
+interface PixiGraphScene {
+  app: Application;
+  world: Container;
+  links: Graphics;
+  nodes: Graphics;
+  labels: Container;
+  labelById: Map<string, BitmapText>;
+  labelColor: number;
+}
+
+function graphNodeRadius(node: GraphNode, degree: number, scale = 1) {
+  const baseRadius = node.kind === "tag" ? 3.2 : 2.8;
+  const rankGrowth = Math.min(16, Math.log2(degree + 1) * 2.5);
+  return (baseRadius + rankGrowth) * scale;
+}
 
 function tagsFor(content: string) {
   const inlineTags = [...content.matchAll(/(^|\s)#([\w/-]+)/g)].map((match) => match[2]);
@@ -119,41 +139,69 @@ function tagsFor(content: string) {
 
 function buildGraph(
   documents: DemoDocument[],
-  activeTitle: string | undefined,
+  vaultGraph: VaultGraph | null | undefined,
+  activePath: string | undefined,
   showTags: boolean,
-  attachments: FileEntry[],
   showAttachments: boolean,
   existingFilesOnly: boolean
 ) {
   const edges = new Map<string, GraphLink>();
-  const connected = new Set<string>(activeTitle ? [activeTitle] : []);
-  const nodes = new Map<string, GraphNode>(
-    documents.map((document) => [
-      document.title,
-      { id: document.title, title: document.title, kind: "file", connected: false },
-    ])
-  );
-  const linkIndex = buildLinkIndex(documents);
-  const knownTitles = new Set(documents.map((document) => document.title));
-
-  for (const edge of linkIndex.edges) {
-    const id = `${edge.source}\n${edge.target}`;
-    edges.set(id, { source: edge.source, target: edge.target });
-    if (edge.source === activeTitle || edge.target === activeTitle) {
-      connected.add(edge.source);
-      connected.add(edge.target);
+  const connected = new Set<string>(activePath ? [activePath] : []);
+  const nodes = new Map<string, GraphNode>();
+  if (vaultGraph) {
+    for (const node of vaultGraph.nodes) {
+      if (node.kind === "binary" && !showAttachments) continue;
+      if (node.kind === "missing" && existingFilesOnly) continue;
+      nodes.set(node.id, {
+        id: node.id,
+        title: node.label,
+        kind: node.kind === "missing" ? "missing" : node.kind === "binary" ? "attachment" : "file",
+        connected: false,
+        path: node.path,
+      });
+    }
+    for (const edge of vaultGraph.edges) {
+      if (!nodes.has(edge.source) || !nodes.has(edge.target)) continue;
+      edges.set(`${edge.source}\n${edge.target}`, { source: edge.source, target: edge.target });
+      if (edge.source === activePath || edge.target === activePath) {
+        connected.add(edge.source);
+        connected.add(edge.target);
+      }
+    }
+  } else {
+    for (const document of documents) {
+      const id = document.path ?? document.title;
+      nodes.set(id, {
+        id,
+        title: document.title,
+        kind: "file",
+        connected: false,
+        path: document.path,
+      });
+    }
+    const linkIndex = buildLinkIndex(documents);
+    for (const edge of linkIndex.edges) {
+      const id = `${edge.source}\n${edge.target}`;
+      edges.set(id, { source: edge.source, target: edge.target });
+      if (edge.source === activePath || edge.target === activePath) {
+        connected.add(edge.source);
+        connected.add(edge.target);
+      }
     }
   }
+  const knownTitles = new Set(documents.map((document) => document.title));
 
   for (const document of documents) {
+    const documentId = document.path ?? document.title;
+    if (!nodes.has(documentId)) continue;
     if (showTags) {
       for (const tag of tagsFor(document.content)) {
         const id = `#${tag}`;
         if (!nodes.has(id)) nodes.set(id, { id, title: id, kind: "tag", connected: false });
-        edges.set(`${document.title}\n${id}`, { source: document.title, target: id });
+        edges.set(`${documentId}\n${id}`, { source: documentId, target: id });
       }
     }
-    if (!existingFilesOnly) {
+    if (!vaultGraph && !existingFilesOnly) {
       for (const target of linkedTitles(document.content)) {
         const missingTitle = target.slice(target.lastIndexOf("/") + 1);
         if (!missingTitle || knownTitles.has(missingTitle) || nodes.has(missingTitle)) continue;
@@ -163,30 +211,16 @@ function buildGraph(
           kind: "missing",
           connected: false,
         });
-        edges.set(`${document.title}\n${missingTitle}`, {
-          source: document.title,
+        edges.set(`${documentId}\n${missingTitle}`, {
+          source: documentId,
           target: missingTitle,
         });
       }
     }
   }
 
-  if (showAttachments) {
-    for (const entry of attachments) {
-      if (entry.kind === "directory" || entry.kind === "markdown") continue;
-      const id = `attachment:${entry.path}`;
-      nodes.set(id, {
-        id,
-        title: entry.name,
-        kind: "attachment",
-        connected: false,
-        path: entry.path,
-      });
-    }
-  }
-
   for (const node of nodes.values()) {
-    node.connected = activeTitle ? connected.has(node.id) || node.id === activeTitle : true;
+    node.connected = activePath ? connected.has(node.id) || node.id === activePath : true;
   }
 
   return { nodes: [...nodes.values()], links: [...edges.values()] };
@@ -214,8 +248,8 @@ function ForceSection({
 
 export function GraphView({
   documents,
-  attachments = [],
-  activeTitle,
+  vaultGraph,
+  activePath,
   bookmarked,
   onBookmarkChange,
   onOpenDocument,
@@ -226,7 +260,7 @@ export function GraphView({
   const [showSettings, setShowSettings] = useState(false);
   const [showTags, setShowTags] = useState(false);
   const [showAttachments, setShowAttachments] = useState(false);
-  const [existingFilesOnly, setExistingFilesOnly] = useState(true);
+  const [existingFilesOnly, setExistingFilesOnly] = useState(false);
   const [showOrphans, setShowOrphans] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
   const [showArrows, setShowArrows] = useState(false);
@@ -237,21 +271,106 @@ export function GraphView({
   const [centerForce, setCenterForce] = useState(0.519);
   const [repelForce, setRepelForce] = useState(10);
   const [linkForce, setLinkForce] = useState(1);
-  const [linkDistance, setLinkDistance] = useState(100);
+  const [linkDistance, setLinkDistance] = useState(250);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [layoutNodes, setLayoutNodes] = useState<GraphNode[]>([]);
   const [transform, setTransform] = useState<ZoomTransform>(zoomIdentity);
-  const svgRef = useRef<SVGSVGElement>(null);
+  const [darkMode, setDarkMode] = useState(() =>
+    document.documentElement.classList.contains("dark")
+  );
+  const [viewport, setViewport] = useState({ width: WIDTH, height: HEIGHT });
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const pixiRef = useRef<PixiGraphScene | null>(null);
   const simulationRef = useRef<ReturnType<typeof forceSimulation<GraphNode>> | null>(null);
-  const zoomRef = useRef<ReturnType<typeof zoom<SVGSVGElement, unknown>> | null>(null);
+  const zoomRef = useRef<ReturnType<typeof zoom<HTMLDivElement, unknown>> | null>(null);
   const dragRef = useRef<GraphDrag | null>(null);
   const layoutNodesRef = useRef<GraphNode[]>([]);
   const frameRef = useRef<number | undefined>(undefined);
+  const lastLayoutUpdateRef = useRef(0);
+  const fitGraphRef = useRef<(minimumScale?: number) => void>(() => undefined);
+  const autoFitPendingRef = useRef(true);
   const graph = useMemo(
     () =>
-      buildGraph(documents, activeTitle, showTags, attachments, showAttachments, existingFilesOnly),
-    [activeTitle, attachments, documents, existingFilesOnly, showAttachments, showTags]
+      buildGraph(documents, vaultGraph, activePath, showTags, showAttachments, existingFilesOnly),
+    [activePath, documents, existingFilesOnly, showAttachments, showTags, vaultGraph]
   );
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const observer = new MutationObserver(() => setDarkMode(root.classList.contains("dark")));
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    autoFitPendingRef.current = true;
+  }, [graph]);
+
+  useEffect(() => {
+    const surface = surfaceRef.current;
+    if (!surface) return;
+    let disposed = false;
+    const app = new Application();
+    const observer = new ResizeObserver(([entry]) => {
+      const width = Math.max(1, Math.round(entry.contentRect.width));
+      const height = Math.max(1, Math.round(entry.contentRect.height));
+      setViewport((current) =>
+        current.width === width && current.height === height ? current : { width, height }
+      );
+      pixiRef.current?.app.renderer.resize(width, height);
+      pixiRef.current?.app.render();
+    });
+    void app
+      .init({
+        width: Math.max(1, surface.clientWidth),
+        height: Math.max(1, surface.clientHeight),
+        backgroundAlpha: 0,
+        antialias: true,
+        autoDensity: true,
+        resolution: Math.min(window.devicePixelRatio || 1, 2),
+        preference: "webgl",
+        powerPreference: "high-performance",
+        autoStart: false,
+      })
+      .then(() => {
+        if (disposed) {
+          app.destroy(true);
+          return;
+        }
+        const world = new Container();
+        const links = new Graphics();
+        const nodes = new Graphics();
+        const labels = new Container();
+        world.addChild(links, nodes, labels);
+        app.stage.addChild(world);
+        app.canvas.className = "block size-full";
+        app.canvas.setAttribute("aria-hidden", "true");
+        surface.prepend(app.canvas);
+        pixiRef.current = {
+          app,
+          world,
+          links,
+          nodes,
+          labels,
+          labelById: new Map(),
+          labelColor: -1,
+        };
+        observer.observe(surface);
+        const width = Math.max(1, surface.clientWidth);
+        const height = Math.max(1, surface.clientHeight);
+        setViewport({ width, height });
+        app.renderer.resize(width, height);
+        app.render();
+      });
+    return () => {
+      disposed = true;
+      observer.disconnect();
+      if (pixiRef.current?.app === app) {
+        pixiRef.current = null;
+        app.destroy(true, { children: true });
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const previous = new Map(layoutNodesRef.current.map((node) => [node.id, node]));
@@ -260,30 +379,50 @@ export function GraphView({
       return old ? { ...node, x: old.x, y: old.y, vx: old.vx, vy: old.vy } : { ...node };
     });
     const links = graph.links.map((link) => ({ ...link }));
+    const degreeById = new Map<string, number>();
+    for (const link of links) {
+      const source = typeof link.source === "string" ? link.source : link.source.id;
+      const target = typeof link.target === "string" ? link.target : link.target.id;
+      degreeById.set(source, (degreeById.get(source) ?? 0) + 1);
+      degreeById.set(target, (degreeById.get(target) ?? 0) + 1);
+    }
     const simulation = forceSimulation(nodes)
       .force(
         "link",
         forceLink<GraphNode, GraphLink>(links)
           .id((node) => node.id)
-          .distance(linkDistance)
+          .distance(linkDistance * 0.16)
           .strength(linkForce * 0.18)
       )
-      .force("charge", forceManyBody().strength(-repelForce * 20))
-      .force("x", forceX(WIDTH / 2).strength(centerForce * 0.1))
-      .force("y", forceY(HEIGHT / 2).strength(centerForce * 0.1))
+      .force("charge", forceManyBody().strength(-repelForce * 10))
+      .force("x", forceX(viewport.width / 2).strength(centerForce * 0.1))
+      .force("y", forceY(viewport.height / 2).strength(centerForce * 0.1))
       .force(
         "collision",
-        forceCollide<GraphNode>().radius((node) => (node.kind === "tag" ? 13 : 18))
+        forceCollide<GraphNode>().radius(
+          (node) => graphNodeRadius(node, degreeById.get(node.id) ?? 0, nodeSize) + 3
+        )
       )
       .velocityDecay(0.2)
-      .alphaDecay(0.025)
+      .alphaDecay(nodes.length > 1_000 ? 0.06 : 0.025)
       .on("tick", () => {
+        const now = performance.now();
+        if (now - lastLayoutUpdateRef.current < 50) return;
         if (frameRef.current !== undefined) return;
         frameRef.current = requestAnimationFrame(() => {
           frameRef.current = undefined;
+          lastLayoutUpdateRef.current = performance.now();
           layoutNodesRef.current = nodes;
           setLayoutNodes([...nodes]);
         });
+      })
+      .on("end", () => {
+        layoutNodesRef.current = nodes;
+        setLayoutNodes([...nodes]);
+        if (autoFitPendingRef.current) {
+          autoFitPendingRef.current = false;
+          requestAnimationFrame(() => fitGraphRef.current(0.55));
+        }
       });
 
     simulationRef.current = simulation;
@@ -292,74 +431,278 @@ export function GraphView({
       if (frameRef.current !== undefined) cancelAnimationFrame(frameRef.current);
       frameRef.current = undefined;
     };
-  }, [centerForce, graph, linkDistance, linkForce, repelForce]);
+  }, [
+    centerForce,
+    graph,
+    linkDistance,
+    linkForce,
+    nodeSize,
+    repelForce,
+    viewport.height,
+    viewport.width,
+  ]);
 
   useEffect(() => {
-    const svg = svgRef.current;
-    if (!svg) return;
-    const behavior = zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.35, 2.8])
+    const surface = surfaceRef.current;
+    if (!surface) return;
+    const behavior = zoom<HTMLDivElement, unknown>()
+      .scaleExtent([0.05, 4])
       .filter((event) => !dragRef.current && (!event.button || event.type === "wheel"))
       .on("zoom", (event) => setTransform(event.transform));
     zoomRef.current = behavior;
-    select(svg).call(behavior);
+    select(surface).call(behavior);
     return () => {
-      select(svg).on(".zoom", null);
+      select(surface).on(".zoom", null);
     };
   }, []);
 
   const linkNodeId = (value: string | GraphNode) => (typeof value === "string" ? value : value.id);
-  const linkedIds = new Set(
-    graph.links.flatMap((link) => [linkNodeId(link.source), linkNodeId(link.target)])
+  const linkedIds = useMemo(
+    () =>
+      new Set(graph.links.flatMap((link) => [linkNodeId(link.source), linkNodeId(link.target)])),
+    [graph.links]
   );
-  const visibleNodes = layoutNodes.filter((node) => {
-    if (!showOrphans && node.kind === "file" && !linkedIds.has(node.id)) {
-      return false;
-    }
-    return !query || node.title.toLowerCase().includes(query.toLowerCase());
-  });
-  const visibleIds = new Set(visibleNodes.map((node) => node.id));
-  const nodeById = new Map(layoutNodes.map((node) => [node.id, node]));
-  const linkCounts = new Map<string, number>();
-  graph.links.forEach((link) => {
-    const source = linkNodeId(link.source);
-    const target = linkNodeId(link.target);
-    linkCounts.set(source, (linkCounts.get(source) ?? 0) + 1);
-    linkCounts.set(target, (linkCounts.get(target) ?? 0) + 1);
-  });
-  const hoveredNeighbors = new Set<string>(hoveredId ? [hoveredId] : []);
-  if (hoveredId) {
+  const visibleNodes = useMemo(
+    () =>
+      layoutNodes.filter((node) => {
+        if (!showOrphans && node.kind === "file" && !linkedIds.has(node.id)) return false;
+        return !query || node.title.toLowerCase().includes(query.toLowerCase());
+      }),
+    [layoutNodes, linkedIds, query, showOrphans]
+  );
+  const visibleIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes]);
+  const nodeById = useMemo(
+    () => new Map(layoutNodes.map((node) => [node.id, node])),
+    [layoutNodes]
+  );
+  const linkCounts = useMemo(() => {
+    const counts = new Map<string, number>();
     graph.links.forEach((link) => {
-      const source = typeof link.source === "string" ? link.source : link.source.id;
-      const target = typeof link.target === "string" ? link.target : link.target.id;
-      if (source === hoveredId) hoveredNeighbors.add(target);
-      if (target === hoveredId) hoveredNeighbors.add(source);
+      const source = linkNodeId(link.source);
+      const target = linkNodeId(link.target);
+      counts.set(source, (counts.get(source) ?? 0) + 1);
+      counts.set(target, (counts.get(target) ?? 0) + 1);
     });
-  }
-  const fitGraph = () => {
-    const svg = svgRef.current;
+    return counts;
+  }, [graph.links]);
+  const hoveredNeighbors = useMemo(() => {
+    const neighbors = new Set<string>(hoveredId ? [hoveredId] : []);
+    if (hoveredId) {
+      graph.links.forEach((link) => {
+        const source = linkNodeId(link.source);
+        const target = linkNodeId(link.target);
+        if (source === hoveredId) neighbors.add(target);
+        if (target === hoveredId) neighbors.add(source);
+      });
+    }
+    return neighbors;
+  }, [graph.links, hoveredId]);
+  useEffect(() => {
+    const scene = pixiRef.current;
+    const surface = surfaceRef.current;
+    if (!scene || !surface) return;
+    const { app, world, links, nodes, labels, labelById } = scene;
+    const foreground = darkMode ? 0xcccccc : 0x555555;
+    const linkColor = darkMode ? 0x707070 : 0xababab;
+    const nodeColor = darkMode ? 0xb2b2b2 : 0x666666;
+    const secondaryNodeColor = darkMode ? 0x707070 : 0x929292;
+    const baseLinkAlpha = darkMode ? 0.4 : 0.42;
+    if (scene.labelColor !== foreground) {
+      for (const label of labelById.values()) label.style.fill = foreground;
+      scene.labelColor = foreground;
+    }
+    world.position.set(transform.x, transform.y);
+    world.scale.set(transform.k);
+    links.clear();
+    nodes.clear();
+    for (const label of labelById.values()) label.visible = false;
+    const liveLabelIds = new Set<string>();
+
+    let baseLinks = false;
+    for (const link of graph.links) {
+      const sourceId = linkNodeId(link.source);
+      const targetId = linkNodeId(link.target);
+      if (!visibleIds.has(sourceId) || !visibleIds.has(targetId)) continue;
+      const source = nodeById.get(sourceId);
+      const target = nodeById.get(targetId);
+      if (!source || !target || source.x === undefined || source.y === undefined) continue;
+      if (target.x === undefined || target.y === undefined) continue;
+      const highlighted = hoveredId === sourceId || hoveredId === targetId;
+      if (!highlighted) {
+        links.moveTo(source.x, source.y).lineTo(target.x, target.y);
+        baseLinks = true;
+      }
+    }
+    if (baseLinks)
+      links.stroke({
+        color: linkColor,
+        width: 0.7 * linkThickness,
+        alpha: hoveredId ? 0.12 : baseLinkAlpha,
+      });
+    if (hoveredId) {
+      let highlightedLinks = false;
+      for (const link of graph.links) {
+        const sourceId = linkNodeId(link.source);
+        const targetId = linkNodeId(link.target);
+        if (hoveredId !== sourceId && hoveredId !== targetId) continue;
+        const source = nodeById.get(sourceId);
+        const target = nodeById.get(targetId);
+        if (!source || !target || source.x === undefined || source.y === undefined) continue;
+        if (target.x === undefined || target.y === undefined) continue;
+        links.moveTo(source.x, source.y).lineTo(target.x, target.y);
+        highlightedLinks = true;
+      }
+      if (highlightedLinks)
+        links.stroke({ color: 0x8b7cf6, width: 1.1 * linkThickness, alpha: 0.9 });
+    }
+    if (showArrows && transform.k > 0.8) {
+      for (const link of graph.links) {
+        const sourceId = linkNodeId(link.source);
+        const targetId = linkNodeId(link.target);
+        if (!visibleIds.has(sourceId) || !visibleIds.has(targetId)) continue;
+        const source = nodeById.get(sourceId);
+        const target = nodeById.get(targetId);
+        if (!source || !target || source.x === undefined || source.y === undefined) continue;
+        if (target.x === undefined || target.y === undefined) continue;
+        const highlighted = hoveredId === sourceId || hoveredId === targetId;
+        const angle = Math.atan2(target.y - source.y, target.x - source.x);
+        const size = 4;
+        links
+          .poly([
+            target.x,
+            target.y,
+            target.x - Math.cos(angle - Math.PI / 6) * size,
+            target.y - Math.sin(angle - Math.PI / 6) * size,
+            target.x - Math.cos(angle + Math.PI / 6) * size,
+            target.y - Math.sin(angle + Math.PI / 6) * size,
+          ])
+          .fill({
+            color: highlighted ? 0x8b7cf6 : linkColor,
+            alpha: hoveredId && !highlighted ? 0.12 : highlighted ? 0.9 : baseLinkAlpha,
+          });
+      }
+    }
+    const labelsVisible =
+      showLabels && transform.k >= (darkMode ? 0.45 : 0.2) + textFadeThreshold * 1.4;
+    for (const node of visibleNodes) {
+      if (node.x === undefined || node.y === undefined) continue;
+      const active = node.id === activePath;
+      const hovered = node.id === hoveredId;
+      const radius = graphNodeRadius(node, linkCounts.get(node.id) ?? 0, nodeSize);
+      const groupColor = groups.find(
+        (group) =>
+          group.query.trim() &&
+          node.title.toLocaleLowerCase().includes(group.query.trim().toLocaleLowerCase())
+      )?.color;
+      const fill =
+        active || hovered
+          ? 0x8b7cf6
+          : groupColor
+            ? new Color(groupColor).toNumber()
+            : node.kind === "tag" || node.kind === "missing"
+              ? secondaryNodeColor
+              : nodeColor;
+      nodes.circle(node.x, node.y, radius).fill({ color: fill, alpha: 1 });
+      if (labelsVisible) {
+        const screenX = node.x * transform.k + transform.x;
+        const screenY = node.y * transform.k + transform.y;
+        if (
+          screenX < -160 ||
+          screenX > viewport.width + 160 ||
+          screenY < -30 ||
+          screenY > viewport.height + 30
+        )
+          continue;
+        let label = labelById.get(node.id);
+        if (!label) {
+          label = new BitmapText({
+            text: node.title,
+            style: { fontFamily: "system-ui", fontSize: 8, fill: foreground },
+          });
+          labelById.set(node.id, label);
+          labels.addChild(label);
+        }
+        label.text = node.title;
+        label.position.set(node.x, node.y + radius + 2.5);
+        label.anchor.set(0.5, 0);
+        label.visible = true;
+        liveLabelIds.add(node.id);
+        label.alpha =
+          hoveredId && !hoveredNeighbors.has(node.id)
+            ? 0.12
+            : hovered
+              ? 1
+              : node.connected || active
+                ? 0.82
+                : 0.55;
+      }
+    }
+    for (const [id, label] of labelById) {
+      if (liveLabelIds.has(id)) continue;
+      labels.removeChild(label);
+      label.destroy();
+      labelById.delete(id);
+    }
+    app.render();
+  }, [
+    activePath,
+    darkMode,
+    graph.links,
+    groups,
+    hoveredId,
+    hoveredNeighbors,
+    layoutNodes,
+    linkCounts,
+    linkThickness,
+    nodeById,
+    nodeSize,
+    showArrows,
+    showLabels,
+    textFadeThreshold,
+    transform,
+    viewport.height,
+    viewport.width,
+    visibleIds,
+    visibleNodes,
+  ]);
+  const fitGraph = (minimumScale = 0) => {
+    const surface = surfaceRef.current;
     const behavior = zoomRef.current;
-    if (!svg || !behavior || !visibleNodes.length) return;
-    const xs = visibleNodes.map((node) => node.x ?? WIDTH / 2);
-    const ys = visibleNodes.map((node) => node.y ?? HEIGHT / 2);
+    if (!surface || !behavior || !visibleNodes.length) return;
+    const xs = visibleNodes.map((node) => node.x ?? viewport.width / 2);
+    const ys = visibleNodes.map((node) => node.y ?? viewport.height / 2);
     const minX = Math.min(...xs);
     const maxX = Math.max(...xs);
     const minY = Math.min(...ys);
     const maxY = Math.max(...ys);
     const width = Math.max(120, maxX - minX + 120);
     const height = Math.max(120, maxY - minY + 120);
-    const scale = Math.min(2.2, 0.9 / Math.max(width / WIDTH, height / HEIGHT));
+    const scale = Math.max(
+      minimumScale,
+      Math.min(2.2, 0.9 / Math.max(width / viewport.width, height / viewport.height))
+    );
     const next = zoomIdentity
-      .translate(WIDTH / 2, HEIGHT / 2)
+      .translate(viewport.width / 2, viewport.height / 2)
       .scale(scale)
       .translate(-(minX + maxX) / 2, -(minY + maxY) / 2);
-    select(svg).transition().duration(280).call(behavior.transform, next);
+    select(surface).transition().duration(280).call(behavior.transform, next);
   };
+  useEffect(() => {
+    fitGraphRef.current = fitGraph;
+  });
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (!autoFitPendingRef.current) return;
+      autoFitPendingRef.current = false;
+      fitGraphRef.current(0.55);
+    }, 2_000);
+    return () => window.clearTimeout(timer);
+  }, [graph]);
   const reset = () => {
     setQuery("");
     setShowTags(false);
     setShowAttachments(false);
-    setExistingFilesOnly(true);
+    setExistingFilesOnly(false);
     setShowOrphans(true);
     setShowLabels(true);
     setShowArrows(false);
@@ -369,60 +712,67 @@ export function GraphView({
     setCenterForce(0.519);
     setRepelForce(10);
     setLinkForce(1);
-    setLinkDistance(100);
+    setLinkDistance(250);
     setGroups([]);
-    const svg = svgRef.current;
+    const surface = surfaceRef.current;
     const behavior = zoomRef.current;
-    if (svg && behavior) select(svg).call(behavior.transform, zoomIdentity);
+    if (surface && behavior) select(surface).call(behavior.transform, zoomIdentity);
     simulationRef.current?.alpha(0.8).restart();
   };
   const changeZoom = (factor: number) => {
-    const svg = svgRef.current;
+    const surface = surfaceRef.current;
     const behavior = zoomRef.current;
-    if (svg && behavior) select(svg).transition().duration(160).call(behavior.scaleBy, factor);
+    if (surface && behavior)
+      select(surface).transition().duration(160).call(behavior.scaleBy, factor);
   };
   const copyScreenshot = () => {
-    const svg = svgRef.current;
-    if (!svg || !navigator.clipboard || typeof ClipboardItem === "undefined") return;
-    const image = new Image();
-    const url = URL.createObjectURL(
-      new Blob([new XMLSerializer().serializeToString(svg)], { type: "image/svg+xml" })
-    );
-    image.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = WIDTH;
-      canvas.height = HEIGHT;
-      const context = canvas.getContext("2d");
-      if (!context) {
-        URL.revokeObjectURL(url);
-        return;
-      }
-      context.fillStyle = getComputedStyle(svg).backgroundColor || "#111";
-      context.fillRect(0, 0, WIDTH, HEIGHT);
-      context.drawImage(image, 0, 0, WIDTH, HEIGHT);
-      canvas.toBlob((blob) => {
-        if (blob) void navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-        URL.revokeObjectURL(url);
-      }, "image/png");
-    };
-    image.onerror = () => URL.revokeObjectURL(url);
-    image.src = url;
+    const scene = pixiRef.current;
+    const surface = surfaceRef.current;
+    if (!scene || !surface || !navigator.clipboard || typeof ClipboardItem === "undefined") return;
+    scene.app.render();
+    const source = scene.app.renderer.extract.canvas({
+      target: scene.app.stage,
+      frame: new Rectangle(0, 0, viewport.width, viewport.height),
+      antialias: true,
+    }) as HTMLCanvasElement;
+    const output = document.createElement("canvas");
+    output.width = source.width;
+    output.height = source.height;
+    const context = output.getContext("2d");
+    if (!context) return;
+    context.fillStyle = getComputedStyle(surface).backgroundColor || "#111";
+    context.fillRect(0, 0, output.width, output.height);
+    context.drawImage(source, 0, 0);
+    output.toBlob((blob) => {
+      if (blob) void navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    }, "image/png");
   };
-  const graphCoordinates = (event: React.PointerEvent<SVGGElement>) => {
-    const svg = svgRef.current;
-    if (!svg) return null;
-    const matrix = svg.getScreenCTM();
-    if (!matrix) return null;
-    const point = svg.createSVGPoint();
-    point.x = event.clientX;
-    point.y = event.clientY;
-    const coordinates = point.matrixTransform(matrix.inverse());
+  const graphCoordinates = (event: React.PointerEvent<HTMLDivElement>) => {
+    const surface = surfaceRef.current;
+    if (!surface) return null;
+    const bounds = surface.getBoundingClientRect();
     return {
-      x: (coordinates.x - transform.x) / transform.k,
-      y: (coordinates.y - transform.y) / transform.k,
+      x: (event.clientX - bounds.left - transform.x) / transform.k,
+      y: (event.clientY - bounds.top - transform.y) / transform.k,
     };
   };
-  const moveNode = (event: React.PointerEvent<SVGGElement>) => {
+  const nodeAtPointer = (event: React.PointerEvent<HTMLDivElement>) => {
+    const coordinates = graphCoordinates(event);
+    if (!coordinates) return null;
+    let nearest: GraphNode | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const node of visibleNodes) {
+      if (node.x === undefined || node.y === undefined || !node.path) continue;
+      const radius = graphNodeRadius(node, linkCounts.get(node.id) ?? 0, nodeSize);
+      const distance = Math.hypot(coordinates.x - node.x, coordinates.y - node.y);
+      if (distance <= radius + 8 / transform.k && distance < nearestDistance) {
+        nearest = node;
+        nearestDistance = distance;
+      }
+    }
+    return nearest;
+  };
+  const moveNode = (event: React.PointerEvent<HTMLDivElement>) => {
     const session = dragRef.current;
     if (!session || session.pointerId !== event.pointerId) return;
     event.preventDefault();
@@ -440,16 +790,23 @@ export function GraphView({
     session.node.fy = coordinates.y;
     session.node.x = coordinates.x;
     session.node.y = coordinates.y;
+    session.moved ||=
+      Math.hypot(coordinates.x - session.startX, coordinates.y - session.startY) > 4 / transform.k;
     layoutNodesRef.current = [...layoutNodesRef.current];
     setLayoutNodes([...layoutNodesRef.current]);
     simulationRef.current?.alpha(0.45).restart();
   };
-  const finishNodeDrag = (event: React.PointerEvent<SVGGElement>) => {
+  const finishNodeDrag = (event: React.PointerEvent<HTMLDivElement>, openOnClick = true) => {
     const session = dragRef.current;
     if (!session || session.pointerId !== event.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
     const node = session.node;
+    const shouldOpen =
+      openOnClick &&
+      !session.moved &&
+      (node.kind === "file" || node.kind === "attachment") &&
+      Boolean(node.path);
     node.fx = null;
     node.fy = null;
     node.vx = session.vx * 0.85;
@@ -459,6 +816,7 @@ export function GraphView({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     simulationRef.current?.alphaTarget(0).alpha(0.75).restart();
+    if (shouldOpen) onOpenDocument(node.path!);
   };
 
   return (
@@ -479,143 +837,44 @@ export function GraphView({
         className="relative flex h-full min-h-0 flex-col bg-background"
         aria-label="Graph view"
       >
-        <svg
-          ref={svgRef}
-          viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-          className="min-h-0 flex-1 touch-none"
+        <div
+          ref={surfaceRef}
+          className="absolute inset-0 touch-none overflow-hidden bg-white dark:bg-background"
           role="img"
           aria-label="Knowledge graph"
-        >
-          <defs>
-            <marker
-              id="flux-graph-arrow"
-              viewBox="0 0 10 10"
-              refX="12"
-              refY="5"
-              markerWidth="5"
-              markerHeight="5"
-              orient="auto-start-reverse"
-            >
-              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--muted-foreground)" />
-            </marker>
-          </defs>
-          <g transform={transform.toString()}>
-            {graph.links.map((link, index) => {
-              const source =
-                typeof link.source === "string" ? nodeById.get(link.source) : link.source;
-              const target =
-                typeof link.target === "string" ? nodeById.get(link.target) : link.target;
-              if (!source || !target || !visibleIds.has(source.id) || !visibleIds.has(target.id))
-                return null;
-              const highlighted = hoveredId === source.id || hoveredId === target.id;
-              return (
-                <line
-                  key={index}
-                  x1={source.x}
-                  y1={source.y}
-                  x2={target.x}
-                  y2={target.y}
-                  stroke={highlighted ? "oklch(0.69 0.18 292)" : "var(--layout-separator)"}
-                  strokeWidth={(highlighted ? 1.8 : 1.1) * linkThickness}
-                  opacity={hoveredId && !highlighted ? 0.18 : 1}
-                  markerEnd={showArrows && transform.k > 0.8 ? "url(#flux-graph-arrow)" : undefined}
-                />
-              );
-            })}
-            {visibleNodes.map((node) => {
-              const active = node.id === activeTitle;
-              const hovered = node.id === hoveredId;
-              const linkCount = linkCounts.get(node.id) ?? 0;
-              const degreeGrowth = Math.min(8, Math.sqrt(linkCount) * 2.25);
-              const baseRadius = (node.kind === "tag" ? 5 : 4.5) + degreeGrowth;
-              const radius = baseRadius * nodeSize;
-              const groupColor = groups.find(
-                (group) =>
-                  group.query.trim() &&
-                  node.title.toLocaleLowerCase().includes(group.query.trim().toLocaleLowerCase())
-              )?.color;
-              const labelsVisible = showLabels && transform.k >= 0.35 + textFadeThreshold * 1.4;
-              return (
-                <g
-                  key={node.id}
-                  transform={`translate(${node.x ?? 0} ${node.y ?? 0})`}
-                  className="cursor-grab active:cursor-grabbing"
-                  onPointerDown={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    const coordinates = graphCoordinates(event);
-                    if (!coordinates) return;
-                    dragRef.current = {
-                      node,
-                      pointerId: event.pointerId,
-                      x: coordinates.x,
-                      y: coordinates.y,
-                      at: event.timeStamp,
-                      vx: 0,
-                      vy: 0,
-                    };
-                    node.fx = node.x;
-                    node.fy = node.y;
-                    event.currentTarget.setPointerCapture(event.pointerId);
-                    simulationRef.current?.alphaTarget(0.32).restart();
-                  }}
-                  onPointerMove={moveNode}
-                  onPointerUp={finishNodeDrag}
-                  onPointerCancel={finishNodeDrag}
-                  onPointerEnter={() => setHoveredId(node.id)}
-                  onPointerLeave={() => setHoveredId(null)}
-                  onDoubleClick={() => {
-                    if (node.kind === "file") onOpenDocument(node.id);
-                    if (node.kind === "attachment" && node.path) onOpenDocument(node.path);
-                  }}
-                >
-                  <circle r={radius + 8} fill="transparent" />
-                  <circle
-                    r={radius}
-                    fill={
-                      active || hovered
-                        ? "oklch(0.69 0.18 292)"
-                        : groupColor
-                          ? groupColor
-                          : node.kind === "tag"
-                            ? "var(--muted-foreground)"
-                            : node.kind === "missing"
-                              ? "transparent"
-                              : "var(--accent-foreground)"
-                    }
-                    stroke={node.kind === "missing" ? "var(--muted-foreground)" : "none"}
-                    strokeDasharray={node.kind === "missing" ? "2 2" : undefined}
-                    opacity={
-                      hoveredId && !hoveredNeighbors.has(node.id)
-                        ? 0.18
-                        : node.connected || active
-                          ? 1
-                          : 0.55
-                    }
-                  />
-                  {labelsVisible ? (
-                    <text
-                      x={radius + 7}
-                      y="4"
-                      className="fill-foreground text-[12px]"
-                      opacity={
-                        hoveredId && !hoveredNeighbors.has(node.id)
-                          ? 0.12
-                          : hoveredId === node.id
-                            ? 1
-                            : node.connected || active
-                              ? 0.82
-                              : 0.55
-                      }
-                    >
-                      {node.title}
-                    </text>
-                  ) : null}
-                </g>
-              );
-            })}
-          </g>
-        </svg>
+          onPointerDown={(event) => {
+            const node = nodeAtPointer(event);
+            const coordinates = graphCoordinates(event);
+            if (!node || !coordinates) return;
+            event.preventDefault();
+            event.stopPropagation();
+            dragRef.current = {
+              node,
+              pointerId: event.pointerId,
+              startX: coordinates.x,
+              startY: coordinates.y,
+              x: coordinates.x,
+              y: coordinates.y,
+              at: event.timeStamp,
+              vx: 0,
+              vy: 0,
+              moved: false,
+            };
+            node.fx = node.x;
+            node.fy = node.y;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            simulationRef.current?.alphaTarget(0.32).restart();
+          }}
+          onPointerMove={(event) => {
+            if (dragRef.current) moveNode(event);
+            else setHoveredId(nodeAtPointer(event)?.id ?? null);
+          }}
+          onPointerUp={finishNodeDrag}
+          onPointerCancel={(event) => finishNodeDrag(event, false)}
+          onPointerLeave={() => {
+            if (!dragRef.current) setHoveredId(null);
+          }}
+        />
         <div
           className={`absolute top-2 z-20 flex flex-col gap-0.5 text-muted-foreground ${showSettings ? "right-[15.5rem]" : "right-2"}`}
         >
@@ -660,7 +919,7 @@ export function GraphView({
             aria-label="Fit graph to view"
             title="Fit to view"
             className="grid size-7 place-items-center rounded-md hover:bg-accent hover:text-foreground"
-            onClick={fitGraph}
+            onClick={() => fitGraph()}
           >
             <Maximize2 className="size-3.5" />
           </button>

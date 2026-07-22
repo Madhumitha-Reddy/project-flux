@@ -3,6 +3,7 @@
 interface Window {
   electronAPI?: {
     ping: () => Promise<string>;
+    getWindowId: () => Promise<string>;
     checkForUpdates: () => Promise<{
       isDev: boolean;
       isPackaged: boolean;
@@ -31,6 +32,11 @@ interface Window {
     watchVaultRevision: (
       vaultId: string,
       onRevision: (revision: number) => void,
+      onError?: (message: string) => void
+    ) => () => void;
+    watchVaultChanges: (
+      vaultId: string,
+      onChange: (change: import("@flux/bridge-contract").VaultChange) => void,
       onError?: (message: string) => void
     ) => () => void;
   };

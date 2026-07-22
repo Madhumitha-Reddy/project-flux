@@ -716,6 +716,8 @@ function LeftSidebar({
   onRemoveBookmark,
   onOpenAddBookmark,
   onCreateBookmarkGroup,
+  expandedFolders,
+  onExpandedFoldersChange,
 }: {
   activeTitle: string;
   pane: LeftPane;
@@ -737,6 +739,8 @@ function LeftSidebar({
   onRemoveBookmark?: (id: string) => void;
   onOpenAddBookmark?: () => void;
   onCreateBookmarkGroup?: (name: string) => void;
+  expandedFolders?: string[];
+  onExpandedFoldersChange?: (paths: string[]) => void;
 }) {
   return (
     <section
@@ -759,6 +763,8 @@ function LeftSidebar({
               onArchive={(path) => onArchivePath?.(path)}
               onOpenTrash={() => onOpenTrash?.()}
               onPreview={(path) => onPreviewPath?.(path) ?? Promise.resolve(null)}
+              expandedFolders={expandedFolders}
+              onExpandedFoldersChange={onExpandedFoldersChange}
             />
           ) : (
             <FileExplorer
@@ -890,7 +896,7 @@ function RightContent({
     );
   }
   if (pane === "backlinks") {
-    const activeTitle = activeDocument?.title ?? "Untitled";
+    const activeTitle = activeDocument?.path ?? activeDocument?.title ?? "Untitled";
     const groupMentions = (mentions: DocumentMention[]) => {
       const grouped = new Map<string, DocumentMention[]>();
       for (const mention of mentions) {
@@ -996,7 +1002,7 @@ function RightContent({
     );
   }
   if (pane === "outgoing") {
-    const activeTitle = activeDocument?.title ?? "Untitled";
+    const activeTitle = activeDocument?.path ?? activeDocument?.title ?? "Untitled";
     const outgoing = [...(buildLinkIndex(documents).outgoing.get(activeTitle) ?? new Set<string>())]
       .filter((title) => title.toLocaleLowerCase().includes(filter.toLocaleLowerCase()))
       .sort((a, b) => (descending ? b.localeCompare(a) : a.localeCompare(b)));
@@ -1280,6 +1286,8 @@ export function WorkspaceLeftSidebar({
   onRemoveBookmark,
   onOpenAddBookmark,
   onCreateBookmarkGroup,
+  expandedFolders,
+  onExpandedFoldersChange,
 }: {
   activeTitle: string;
   pane: LeftPane;
@@ -1301,6 +1309,8 @@ export function WorkspaceLeftSidebar({
   onRemoveBookmark?: (id: string) => void;
   onOpenAddBookmark?: () => void;
   onCreateBookmarkGroup?: (name: string) => void;
+  expandedFolders?: string[];
+  onExpandedFoldersChange?: (paths: string[]) => void;
 }) {
   return (
     <LeftSidebar
@@ -1324,6 +1334,8 @@ export function WorkspaceLeftSidebar({
       onRemoveBookmark={onRemoveBookmark}
       onOpenAddBookmark={onOpenAddBookmark}
       onCreateBookmarkGroup={onCreateBookmarkGroup}
+      expandedFolders={expandedFolders}
+      onExpandedFoldersChange={onExpandedFoldersChange}
     />
   );
 }
