@@ -1051,13 +1051,13 @@ function RightContent({
               <button
                 type="button"
                 onClick={() => toggleGroupExpanded(source)}
-                className="flex items-center gap-1.5 min-w-0 flex-1 text-left text-xs font-semibold text-foreground outline-none"
+                className="flex items-center gap-1.5 min-w-0 flex-1 text-left text-[11px] font-semibold text-muted-foreground outline-none hover:text-foreground transition-colors"
               >
-                <ChevronRight className={`size-3.5 shrink-0 transition-transform text-muted-foreground ${isExpanded ? "rotate-90" : ""}`} />
+                <ChevronRight className={`size-3.5 shrink-0 transition-transform ${isExpanded ? "rotate-90 text-foreground" : ""}`} />
                 <span className="truncate">{titleFromPath(source)}</span>
               </button>
               <div className="flex items-center gap-1">
-                <span className="text-[10px] text-muted-foreground font-mono">
+                <span className="text-[11px] text-muted-foreground font-medium">
                   {mentions.length}
                 </span>
                 <button
@@ -1085,7 +1085,7 @@ function RightContent({
                       setTimeout(dispatch, 100);
                       setTimeout(dispatch, 250);
                     }}
-                    className="w-full text-left rounded-md border border-[var(--layout-separator)] bg-muted/20 p-2.5 hover:bg-accent/40 transition-colors outline-none block shadow-xs"
+                    className="w-full text-left rounded-md border border-[var(--layout-separator)] bg-transparent p-2 hover:bg-accent/40 transition-colors outline-none block shadow-none"
                   >
                     <div className="text-[11px] leading-relaxed text-muted-foreground/90 whitespace-pre-wrap break-words">
                       {highlightQuery(mention.excerpt, activeDocument.title)}
@@ -1104,13 +1104,6 @@ function RightContent({
         controls={
           <>
             <SidebarToolbar>
-              <IconButton
-                label="Show search filter"
-                active={filterVisible}
-                onClick={() => setFilterVisible((current) => !current)}
-              >
-                <Search className="size-3.5" />
-              </IconButton>
               <IconButton
                 label="Expand all note groups"
                 onClick={handleExpandAll}
@@ -1144,39 +1137,44 @@ function RightContent({
                 <RefreshCw className="size-3.5" />
               </IconButton>
             </SidebarToolbar>
-            {filterField}
+            {/* Searchbar always visible */}
+            <div className="px-2 py-1.5 border-b border-[var(--layout-separator)] bg-background">
+              <label className="flex h-7 w-full items-center gap-2 rounded-sm border border-[var(--layout-separator)] bg-accent/30 px-2 shadow-xs transition-colors focus-within:border-ring focus-within:bg-background">
+                <Search className="size-3.5 text-muted-foreground shrink-0" />
+                <input
+                  aria-label="Filter"
+                  placeholder="Search..."
+                  value={filter}
+                  onChange={(event) => setFilter(event.target.value)}
+                  className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+                />
+              </label>
+            </div>
           </>
         }
       >
-        <div className="px-3 py-2 text-xs h-full overflow-y-auto">
+        <div className="px-3 py-3 text-xs h-full overflow-y-auto">
           {/* Linked Mentions Section */}
-          <div className="mb-4">
-            <div className="flex items-center justify-between py-1 font-medium text-foreground mb-1">
+          <div className="mb-6">
+            <div className="flex items-center justify-between py-1 font-semibold text-foreground mb-2">
               <span>Linked mentions</span>
-              <span className="text-[10px] bg-muted/65 text-muted-foreground px-2 py-0.5 rounded-full font-semibold">
+              <span className="text-[11px] text-muted-foreground">
                 {totalLinkedCount}
               </span>
             </div>
             {totalLinkedCount > 0 ? (
               renderGroupedMentions(linked)
-            ) : (
-              <p className="py-2 px-1 text-muted-foreground italic">No backlinks found.</p>
-            )}
+            ) : null}
           </div>
 
           {/* Unlinked Mentions Section */}
           <div>
-            <div className="flex items-center justify-between py-1 font-medium text-foreground mb-1">
+            <div className="flex items-center justify-between py-1 font-semibold text-muted-foreground mb-2">
               <span>Unlinked mentions</span>
-              <span className="text-[10px] bg-muted/65 text-muted-foreground px-2 py-0.5 rounded-full font-semibold">
-                {totalUnlinkedCount}
-              </span>
             </div>
             {totalUnlinkedCount > 0 ? (
               renderGroupedMentions(unlinked)
-            ) : (
-              <p className="py-2 px-1 text-muted-foreground italic">No unlinked mentions found.</p>
-            )}
+            ) : null}
           </div>
         </div>
       </SidebarPane>
