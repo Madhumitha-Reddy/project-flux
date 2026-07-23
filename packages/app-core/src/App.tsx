@@ -27,6 +27,7 @@ import { Toaster, toast } from "@flux/shared-ui/components/sonner";
 import { VaultPluginHost, type PluginBundle } from "@flux/plugin-runtime";
 import type { PluginCapability } from "@flux/plugin-sdk";
 import type {
+  DocumentReferences,
   FileEntry,
   FluxClient,
   MarketplacePlugin,
@@ -63,7 +64,6 @@ import {
   type LeftPane,
   type RightPane,
 } from "./workspace-sidebars";
-import { GraphView } from "./graph-view";
 import { PdfExportDialog } from "./pdf-export";
 import { FilePreview } from "./file-preview";
 import {
@@ -228,6 +228,9 @@ function DegradedBanner({ onRebuild }: { onRebuild: () => void }) {
 }
 const PdfViewer = lazy(() =>
   import("./pdf-viewer").then((module) => ({ default: module.PdfViewer }))
+);
+const GraphView = lazy(() =>
+  import("./graph-view").then((module) => ({ default: module.GraphView }))
 );
 
 function documentFromLocation() {
@@ -515,6 +518,10 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   const fileEntriesRef = useRef<FileEntry[]>([]);
   const loadedFoldersRef = useRef(new Set<string>());
   const vaultFileVersionsRef = useRef(new Map<string, string>());
+  const vaultLoadRef = useRef(0);
+  const activeVaultIdRef = useRef("");
+  const graphVisibleRef = useRef(false);
+  const referenceRequestsRef = useRef(new Map<string, Promise<DocumentReferences>>());
   const saveTimersRef = useRef(new Map<string, number>());
   const saveChainsRef = useRef(new Map<string, Promise<void>>());
   const indexingToastVaultRef = useRef<string | null>(null);
@@ -522,6 +529,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   const lastIndexingProgressRef = useRef<IndexingProgress | null>(null);
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeLeaf = findWorkspaceLeaf(workspaceRoot, activeLeafId);
+  const graphVisible = workspaceLeaves(workspaceRoot).some((leaf) => leaf.view === "graph");
   const visibleActiveTab =
     activeLeaf?.view === "editor"
       ? tabs.find((tab) => tab.id === activeLeaf.activeTabId)
@@ -609,7 +617,16 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       if (!runtime.client || !vault) {
         return Promise.resolve({ linked: [], unlinked: [], outgoing: [] });
       }
-      return runtime.client.getDocumentReferences(vault.id, path);
+      const key = `${vault.id}:${sidebarIndexRevision}:${path}`;
+      const cached = referenceRequestsRef.current.get(key);
+      if (cached) return cached;
+      if (referenceRequestsRef.current.size >= 32) referenceRequestsRef.current.clear();
+      const request = runtime.client.getDocumentReferences(vault.id, path).catch((error) => {
+        referenceRequestsRef.current.delete(key);
+        throw error;
+      });
+      referenceRequestsRef.current.set(key, request);
+      return request;
     },
     [runtime.client, sidebarIndexRevision, vault]
   );
@@ -622,6 +639,10 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   useEffect(() => {
     tabsRef.current = tabs;
   }, [tabs]);
+
+  useEffect(() => {
+    graphVisibleRef.current = graphVisible;
+  }, [graphVisible]);
 
   useEffect(() => {
     const toastId = "vault-indexing-progress";
@@ -848,10 +869,14 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     return entries;
   };
 
-  const refreshFiles = async (vaultId = vault?.id) => {
+  const refreshFiles = async (
+    vaultId = vault?.id,
+    isCurrent = () => activeVaultIdRef.current === vaultId
+  ) => {
     if (!runtime.client || !vaultId) return [];
-    loadedFoldersRef.current.clear();
     const entries = await fetchFileChildren(vaultId, "");
+    if (!isCurrent()) return entries;
+    loadedFoldersRef.current.clear();
     fileEntriesRef.current = entries;
     setFileEntries(entries);
     return entries;
@@ -859,7 +884,9 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
 
   const loadFolderChildren = async (parent: string) => {
     if (!runtime.client || !vault || loadedFoldersRef.current.has(parent)) return;
-    const children = await fetchFileChildren(vault.id, parent);
+    const vaultId = vault.id;
+    const children = await fetchFileChildren(vaultId, parent);
+    if (activeVaultIdRef.current !== vaultId) return;
     loadedFoldersRef.current.add(parent);
     const byPath = new Map(fileEntriesRef.current.map((entry) => [entry.path, entry]));
     for (const entry of children) byPath.set(entry.path, entry);
@@ -986,6 +1013,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   const refreshVaultGraph = async (vaultId = vault?.id) => {
     if (!runtime.client || !vaultId) return null;
     const graph = await runtime.client.getGraph(vaultId);
+    if (activeVaultIdRef.current !== vaultId) return null;
     setVaultGraph(graph);
     return graph;
   };
@@ -1012,6 +1040,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
         } satisfies DemoDocument;
       })
     );
+    if (activeVaultIdRef.current !== vaultId) return [];
     const visiblePaths = new Set(entries.map((entry) => entry.path));
     for (const path of savedDocumentsRef.current.keys()) {
       if (!visiblePaths.has(path)) savedDocumentsRef.current.delete(path);
@@ -1057,6 +1086,9 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
 
   const loadVault = async (info: VaultInfo) => {
     if (!runtime.client) return;
+    const load = ++vaultLoadRef.current;
+    const isCurrent = () => vaultLoadRef.current === load;
+    activeVaultIdRef.current = info.id;
     setStatus(`Opening ${info.name}…`);
     setAppVault(info, "initializing", null);
     setSessionVaultId("");
@@ -1068,15 +1100,17 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     setLayoutState(undefined);
     savedDocumentsRef.current.clear();
     vaultFileVersionsRef.current.clear();
-    let entries = await refreshFiles(info.id);
-    void refreshVaultGraph(info.id).catch(() => undefined);
+    let entries = await refreshFiles(info.id, isCurrent);
+    if (!isCurrent()) return;
     const persisted = await statePersistence.loadWorkspaceSession(windowIdRef.current, info.id);
+    if (!isCurrent()) return;
     if (persisted?.expandedFolders?.length) {
       const restoredChildren = (
         await Promise.all(
           persisted.expandedFolders.map((parent) => fetchFileChildren(info.id, parent))
         )
       ).flat();
+      if (!isCurrent()) return;
       for (const parent of persisted.expandedFolders) loadedFoldersRef.current.add(parent);
       entries = [
         ...new Map([...entries, ...restoredChildren].map((entry) => [entry.path, entry])).values(),
@@ -1117,6 +1151,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             }
           }
           const file = await runtime.client!.readFile(info.id, path);
+          if (!isCurrent()) return null;
           const document: DemoDocument = {
             title: titleFromPath(file.path),
             path: file.path,
@@ -1132,6 +1167,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
         }
       })
     );
+    if (!isCurrent()) return;
     const loaded = restored.flatMap((tab) => (tab ? [tab] : []));
     setVaultDocuments(loaded.flatMap((tab) => (tab.document ? [tab.document] : [])));
     if (!loaded.length) {
@@ -1251,7 +1287,8 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       if (!active) return;
       fileEntriesRef.current = entries;
       setFileEntries(entries);
-      await Promise.all([refreshVaultDocuments(vault.id, entries), refreshVaultGraph(vault.id)]);
+      await refreshVaultDocuments(vault.id, entries);
+      if (graphVisibleRef.current) await refreshVaultGraph(vault.id);
     };
 
     const applyChange = async (change: VaultChange) => {
@@ -1287,7 +1324,8 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       );
       fileEntriesRef.current = entries;
       setFileEntries(entries);
-      await Promise.all([refreshVaultDocuments(vault.id, entries), refreshVaultGraph(vault.id)]);
+      await refreshVaultDocuments(vault.id, entries);
+      if (graphVisibleRef.current) await refreshVaultGraph(vault.id);
     };
 
     const stop = runtime.client.watchVaultChanges(
@@ -1308,6 +1346,13 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     // runtime client is shell-owned; vault id selects watcher stream.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runtime.client, vault?.id]);
+
+  useEffect(() => {
+    if (!graphVisible || !runtime.client || !vault) return;
+    void refreshVaultGraph(vault.id).catch(() => undefined);
+    // Graph data stays unloaded until a graph pane exists.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [graphVisible, runtime.client, vault?.id]);
 
   useEffect(() => {
     if (!runtime.client || !vault) return;
@@ -2571,24 +2616,32 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
               </LayoutGroup>
             </div>
           ) : leaf.view === "graph" ? (
-            <GraphView
-              documents={documents}
-              vaultGraph={vaultGraph}
-              activePath={
-                leafActiveTab?.document?.path ??
-                leafActiveTab?.pdf?.path ??
-                leafActiveTab?.preview?.path
+            <Suspense
+              fallback={
+                <div className="grid h-full place-items-center text-xs text-muted-foreground">
+                  Loading graph…
+                </div>
               }
-              bookmarked={leafActiveTab?.bookmarked ?? false}
-              onBookmarkChange={(bookmarked) => {
-                if (leafActiveTab) {
-                  updateTab(leafActiveTab.id, (tab) => ({ ...tab, bookmarked }));
+            >
+              <GraphView
+                documents={documents}
+                vaultGraph={vaultGraph}
+                activePath={
+                  leafActiveTab?.document?.path ??
+                  leafActiveTab?.pdf?.path ??
+                  leafActiveTab?.preview?.path
                 }
-              }}
-              onOpenDocument={openDocument}
-              onSplitRight={() => splitLeaf(leaf.id, "horizontal")}
-              onSplitDown={() => splitLeaf(leaf.id, "vertical")}
-            />
+                bookmarked={leafActiveTab?.bookmarked ?? false}
+                onBookmarkChange={(bookmarked) => {
+                  if (leafActiveTab) {
+                    updateTab(leafActiveTab.id, (tab) => ({ ...tab, bookmarked }));
+                  }
+                }}
+                onOpenDocument={openDocument}
+                onSplitRight={() => splitLeaf(leaf.id, "horizontal")}
+                onSplitDown={() => splitLeaf(leaf.id, "vertical")}
+              />
+            </Suspense>
           ) : leaf.view === "pdf" ? (
             <FluxEditorPane
               title="PDF viewer"

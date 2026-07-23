@@ -10,6 +10,8 @@ import {
   ListFilter,
   Trash2,
 } from "lucide-react";
+import { AnimatePresence } from "motion/react";
+import * as m from "motion/react-m";
 import { ContextMenu, HoverCard } from "radix-ui";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@flux/shared-ui/components/tooltip";
 import ReadingView from "./reading-view";
@@ -346,7 +348,7 @@ export function VaultExplorer({
           setDropTarget(undefined);
         }}
         onPointerLeave={() => hidePreview(entry.path)}
-        className={`flex w-full min-w-0 max-w-full select-none items-center gap-1.5 overflow-hidden rounded-md py-1.5 pr-2 text-left text-xs outline-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring/50 ${
+        className={`flex w-full min-w-0 max-w-full select-none items-center gap-1.5 overflow-hidden rounded-md py-1.5 pr-2 text-left text-xs outline-none transition-colors duration-100 hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring/50 motion-reduce:transition-none ${
           dropTarget === entry.path
             ? "bg-primary/10 text-foreground ring-1 ring-inset ring-primary/50"
             : entry.path === activePath
@@ -356,7 +358,9 @@ export function VaultExplorer({
         style={{ paddingLeft: 8 + depth * 16 }}
       >
         {directory ? (
-          <ChevronRight className={`size-3.5 shrink-0 ${expanded ? "rotate-90" : ""}`} />
+          <ChevronRight
+            className={`size-3.5 shrink-0 transition-transform duration-150 ease-out motion-reduce:transition-none ${expanded ? "rotate-90" : ""}`}
+          />
         ) : null}
         {directory ? (
           <FolderOpen className="size-3.5 shrink-0" />
@@ -481,16 +485,34 @@ export function VaultExplorer({
             </ContextMenu.Content>
           </ContextMenu.Portal>
         </ContextMenu.Root>
-        {directory && expanded ? (
-          <div role="group" className="relative">
-            <span
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-y-0 w-px bg-[color-mix(in_oklab,var(--muted-foreground)_16%,transparent)]"
-              style={{ left: 15 + depth * 16 }}
-            />
-            {renderInlineEdit(entry.path, depth + 1)}
-            {(children.get(entry.path) ?? []).map((child) => renderEntry(child, depth + 1))}
-          </div>
+        {directory ? (
+          <AnimatePresence initial={false}>
+            {expanded ? (
+              <m.div
+                key={`${entry.path}:children`}
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{
+                  height: { duration: 0.16, ease: [0.22, 1, 0.36, 1] },
+                  opacity: { duration: 0.1, ease: "easeOut" },
+                  layout: { duration: 0.16, ease: [0.22, 1, 0.36, 1] },
+                }}
+                layout="size"
+                className="overflow-hidden"
+              >
+                <div role="group" className="relative">
+                  <span
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-y-0 w-px bg-[color-mix(in_oklab,var(--muted-foreground)_16%,transparent)]"
+                    style={{ left: 15 + depth * 16 }}
+                  />
+                  {renderInlineEdit(entry.path, depth + 1)}
+                  {(children.get(entry.path) ?? []).map((child) => renderEntry(child, depth + 1))}
+                </div>
+              </m.div>
+            ) : null}
+          </AnimatePresence>
         ) : null}
       </div>
     );

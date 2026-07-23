@@ -968,27 +968,28 @@ function RightContent({
   useEffect(() => {
     if (!activePath || !loadReferences || (pane !== "backlinks" && pane !== "outgoing")) return;
     let current = true;
-    queueMicrotask(() => {
+    const timer = window.setTimeout(() => {
       if (!current) return;
       setReferenceLoading(true);
       setReferenceError("");
-    });
-    void loadReferences(activePath)
-      .then((result) => {
-        if (current) {
-          setReferences(result);
-          setReferencePath(activePath);
-        }
-      })
-      .catch((error) => {
-        if (current)
-          setReferenceError(error instanceof Error ? error.message : "Could not load links");
-      })
-      .finally(() => {
-        if (current) setReferenceLoading(false);
-      });
+      void loadReferences(activePath)
+        .then((result) => {
+          if (current) {
+            setReferences(result);
+            setReferencePath(activePath);
+          }
+        })
+        .catch((error) => {
+          if (current)
+            setReferenceError(error instanceof Error ? error.message : "Could not load links");
+        })
+        .finally(() => {
+          if (current) setReferenceLoading(false);
+        });
+    }, 120);
     return () => {
       current = false;
+      window.clearTimeout(timer);
     };
   }, [activePath, loadReferences, pane]);
 

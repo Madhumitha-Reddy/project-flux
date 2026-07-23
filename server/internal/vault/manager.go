@@ -585,14 +585,19 @@ func (c *Context) reconcilePass(ctx context.Context) bool {
 		c.degrade()
 		return false
 	}
-	const indexBatchSize = 100
+	const (
+		indexBatchSize  = 100
+		indexBatchBytes = 16 << 20
+	)
 	batch := make([]index.PreparedFile, 0, indexBatchSize)
+	batchBytes := int64(0)
 	flush := func() {
 		if len(batch) == 0 {
 			return
 		}
 		if generation != c.indexGen.Load() {
 			batch = batch[:0]
+			batchBytes = 0
 			c.dirty.Store(true)
 			return
 		}
@@ -600,6 +605,7 @@ func (c *Context) reconcilePass(ctx context.Context) bool {
 			progress.Failed += len(batch)
 		}
 		batch = batch[:0]
+		batchBytes = 0
 	}
 	for _, entry := range entries {
 		select {
@@ -610,11 +616,20 @@ func (c *Context) reconcilePass(ctx context.Context) bool {
 		default:
 		}
 		if fingerprint, exists := fingerprints[entry.Path]; !exists || !fingerprint.Current(entry) {
+			entryBytes := int64(0)
+			if (entry.Kind == domain.FileKindMarkdown || entry.Kind == domain.FileKindText) &&
+				entry.SizeBytes <= index.MaxIndexedTextBytes {
+				entryBytes = entry.SizeBytes
+			}
+			if len(batch) > 0 && batchBytes+entryBytes > indexBatchBytes {
+				flush()
+			}
 			prepared, err := c.prepareEntry(entry)
 			if err != nil {
 				progress.Failed++
 			} else {
 				batch = append(batch, prepared)
+				batchBytes += entryBytes
 				if len(batch) == cap(batch) {
 					flush()
 				}
