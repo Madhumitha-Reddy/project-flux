@@ -3597,7 +3597,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                 cpuPercent={performanceStats?.cpuPercent}
                 memoryMB={performanceStats?.memoryMB}
                 themeControl={
-                  <div className="flex items-center gap-0.5 -mr-1">
+                  <div className="flex items-center gap-0 -mr-1">
                     <button
                       type="button"
                       aria-label="Settings"
