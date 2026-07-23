@@ -27,7 +27,7 @@ import { TooltipProvider } from "@flux/shared-ui/components/tooltip";
 import { Toaster, toast } from "@flux/shared-ui/components/sonner";
 import { VaultPluginHost, type PluginBundle } from "@flux/plugin-runtime";
 import type { PluginCapability } from "@flux/plugin-sdk";
-import { Bookmark } from "lucide-react";
+import { Bookmark, Settings } from "lucide-react";
 import type {
   DocumentReferences,
   FileEntry,
@@ -3288,7 +3288,6 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                 onCanvas={() => {
                   if (plugins["canvas"] !== false) openDocument("Canvas");
                 }}
-                onSettings={() => setSettingsOpen(true)}
                 plugins={plugins}
               />
             }
@@ -3397,7 +3396,18 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                 cpuPercent={performanceStats?.cpuPercent}
                 memoryMB={performanceStats?.memoryMB}
                 themeControl={
-                  <ModeToggle className="-mr-2 size-7 rounded-none border-0 bg-transparent shadow-none hover:bg-accent/60 dark:bg-transparent" />
+                  <div className="flex items-center gap-0.5 -mr-1">
+                    <button
+                      type="button"
+                      aria-label="Settings"
+                      title="Settings"
+                      onClick={() => setSettingsOpen(true)}
+                      className="grid size-6 shrink-0 place-items-center rounded-sm outline-none text-muted-foreground hover:bg-accent/60 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/50"
+                    >
+                      <Settings className="size-[15px]" />
+                    </button>
+                    <ModeToggle className="size-6 rounded-sm border-0 bg-transparent shadow-none hover:bg-accent/60 dark:bg-transparent" />
+                  </div>
                 }
               />
             }

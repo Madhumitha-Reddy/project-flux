@@ -27,7 +27,6 @@ import {
   Puzzle,
   RefreshCw,
   Search,
-  Settings,
   Settings2,
   Tags,
   X,
@@ -1709,14 +1708,12 @@ export function WorkspaceRibbon({
   onFiles,
   onPlugins,
   onCanvas,
-  onSettings,
   plugins,
 }: {
   onGraph?: () => void;
   onFiles?: () => void;
   onPlugins?: () => void;
   onCanvas?: () => void;
-  onSettings?: () => void;
   plugins?: Record<string, boolean>;
 }) {
   const showFiles = !plugins || plugins["file-explorer"] !== false;
@@ -1755,11 +1752,6 @@ export function WorkspaceRibbon({
       <IconButton label="Plugins" onClick={onPlugins}>
         <Puzzle className="size-4" />
       </IconButton>
-      <div className="mt-auto">
-        <IconButton label="Settings" onClick={onSettings}>
-          <Settings className="size-4" />
-        </IconButton>
-      </div>
     </nav>
   );
 }
