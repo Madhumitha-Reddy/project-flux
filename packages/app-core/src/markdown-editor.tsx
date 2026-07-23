@@ -42,7 +42,7 @@ import { livePreview } from "./live-preview";
 import { isMarkdownListLine, listIndentWidth, nestedOrderedMarkerEdit } from "./markdown-list";
 import { obsidianMarkdownExtensions } from "./obsidian-markdown";
 import { showRenderError } from "./render-feedback";
-import { linkedMentionsFor, unlinkedMentionsFor } from "./link-index";
+import { linkedMentionsFor, unlinkedMentionsFor, globalBacklinkStore } from "./link-index";
 
 const ReadingView = lazy(() => import("./reading-view"));
 
@@ -819,7 +819,7 @@ export function MarkdownEditor({
   const { frontmatter, body } = splitFrontmatter(document.content);
   const activeTitle = document.path ?? document.title;
   const linkedMentions = useMemo(
-    () => linkedMentionsFor(documents, activeTitle),
+    () => globalBacklinkStore.getLinkedMentions(documents, activeTitle),
     [documents, activeTitle]
   );
   const unlinkedMentions = useMemo(

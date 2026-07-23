@@ -38,8 +38,8 @@ import { getFrontmatterProperties, splitFrontmatter } from "./frontmatter";
 import type { DemoDocument } from "./markdown-editor";
 import {
   buildLinkIndex,
-  linkedMentionsFor,
   unlinkedMentionsFor,
+  globalBacklinkStore,
   type DocumentMention,
 } from "./link-index";
 import { VaultExplorer } from "./vault-explorer";
@@ -989,7 +989,7 @@ function RightContent({
 
     // decoupled performance: raw backlink indexing only runs when documents/activeTitle/refreshTrigger changes
     const rawLinkedMentions = useMemo(() => {
-      return linkedMentionsFor(documents, activeTitle);
+      return globalBacklinkStore.getLinkedMentions(documents, activeTitle);
     }, [documents, activeTitle, refreshTrigger]);
 
     const rawUnlinkedMentions = useMemo(() => {

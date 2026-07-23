@@ -179,11 +179,118 @@ export function linkedTitles(content: string) {
   return rawLinks(content).map((link) => normalizeTarget(link.target));
 }
 
+// Global cached index store for ultra-fast, zero-re-scan lookups across the entire vault
+export class BacklinkIndexStore {
+  private fileMap = new Map<string, DemoDocument>();
+  private reverseLinked = new Map<string, Map<string, DocumentMention[]>>();
+  private cacheVersion = 0;
+
+  public rebuild(documents: DemoDocument[]) {
+    this.fileMap.clear();
+    this.reverseLinked.clear();
+    const resolve = resolverFor(documents);
+
+    for (const doc of documents) {
+      const id = documentId(doc);
+      this.fileMap.set(id, doc);
+
+      for (const link of rawLinks(doc.content)) {
+        const resolved = resolve(link.target, doc);
+        if (resolved) {
+          let sourceGroup = this.reverseLinked.get(resolved);
+          if (!sourceGroup) {
+            sourceGroup = new Map();
+            this.reverseLinked.set(resolved, sourceGroup);
+          }
+          let mentions = sourceGroup.get(id);
+          if (!mentions) {
+            mentions = [];
+            sourceGroup.set(id, mentions);
+          }
+          mentions.push({
+            source: id,
+            target: resolved,
+            ...locationFor(doc.content, link.index),
+          });
+        }
+      }
+    }
+    this.cacheVersion += 1;
+  }
+
+  public updateSingleDocument(doc: DemoDocument, allDocs: DemoDocument[]) {
+    const id = documentId(doc);
+    this.fileMap.set(id, doc);
+
+    // Clean up old references originating from this source
+    for (const sourceGroup of this.reverseLinked.values()) {
+      sourceGroup.delete(id);
+    }
+
+    const resolve = resolverFor(allDocs);
+    for (const link of rawLinks(doc.content)) {
+      const resolved = resolve(link.target, doc);
+      if (resolved) {
+        let sourceGroup = this.reverseLinked.get(resolved);
+        if (!sourceGroup) {
+          sourceGroup = new Map();
+          this.reverseLinked.set(resolved, sourceGroup);
+        }
+        let mentions = sourceGroup.get(id);
+        if (!mentions) {
+          mentions = [];
+          sourceGroup.set(id, mentions);
+        }
+        mentions.push({
+          source: id,
+          target: resolved,
+          ...locationFor(doc.content, link.index),
+        });
+      }
+    }
+    this.cacheVersion += 1;
+  }
+
+  public getLinkedMentions(documents: DemoDocument[], targetIdentifier: string): DocumentMention[] {
+    const wantedId = targetId(documents, targetIdentifier);
+    const targetDoc = documents.find(
+      (d) => documentId(d) === wantedId || d.path === targetIdentifier || d.title === targetIdentifier
+    );
+
+    const wantedSet = new Set<string>();
+    if (wantedId) wantedSet.add(wantedId);
+    if (targetDoc) {
+      wantedSet.add(documentId(targetDoc));
+      if (targetDoc.path) wantedSet.add(targetDoc.path);
+      if (targetDoc.title) wantedSet.add(targetDoc.title);
+    }
+    wantedSet.add(targetIdentifier);
+
+    const results: DocumentMention[] = [];
+    const seen = new Set<string>();
+
+    for (const id of wantedSet) {
+      const sourceGroup = this.reverseLinked.get(id);
+      if (sourceGroup) {
+        for (const [sourcePath, mentions] of sourceGroup.entries()) {
+          const key = `${id}::${sourcePath}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            results.push(...mentions);
+          }
+        }
+      }
+    }
+    return results;
+  }
+}
+
+export const globalBacklinkStore = new BacklinkIndexStore();
+
 export function linkedMentionsFor(documents: DemoDocument[], targetIdentifier: string) {
-  const filteredDocuments = documents.filter((doc) => !isIgnoredPath(doc.path));
-  const resolve = resolverFor(filteredDocuments);
-  const wantedId = targetId(filteredDocuments, targetIdentifier);
-  const targetDoc = filteredDocuments.find(
+  const resolve = resolverFor(documents);
+  const wantedId = targetId(documents, targetIdentifier);
+  const targetDoc = documents.find(
     (d) => documentId(d) === wantedId || d.path === targetIdentifier || d.title === targetIdentifier
   );
 
@@ -197,7 +304,7 @@ export function linkedMentionsFor(documents: DemoDocument[], targetIdentifier: s
   wantedSet.add(targetIdentifier);
 
   const mentions: DocumentMention[] = [];
-  for (const document of filteredDocuments) {
+  for (const document of documents) {
     for (const link of rawLinks(document.content)) {
       const resolved = resolve(link.target, document);
       if (resolved && (wantedSet.has(resolved) || wantedSet.has(normalizeTarget(resolved)))) {
@@ -213,8 +320,7 @@ export function linkedMentionsFor(documents: DemoDocument[], targetIdentifier: s
 }
 
 export function unlinkedMentionsFor(documents: DemoDocument[], targetIdentifier: string) {
-  const filteredDocuments = documents.filter((doc) => !isIgnoredPath(doc.path));
-  const targetDoc = filteredDocuments.find(
+  const targetDoc = documents.find(
     (d) => documentId(d) === targetIdentifier || d.path === targetIdentifier || d.title === targetIdentifier
   );
   const targetTitle =
@@ -228,7 +334,7 @@ export function unlinkedMentionsFor(documents: DemoDocument[], targetIdentifier:
   );
   const wantedId = targetDoc ? documentId(targetDoc) : targetIdentifier;
 
-  for (const document of filteredDocuments) {
+  for (const document of documents) {
     if (documentId(document) === wantedId) continue;
     const searchable = maskMarkdown(document.content);
     for (const match of searchable.matchAll(pattern)) {

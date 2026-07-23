@@ -40,7 +40,7 @@ import {
   type DemoDocument,
 } from "./markdown-editor";
 import { setFrontmatterProperty } from "./frontmatter";
-import { buildLinkIndex, isIgnoredPath } from "./link-index";
+import { buildLinkIndex, isIgnoredPath, globalBacklinkStore } from "./link-index";
 import {
   WorkspaceLeftSidebar,
   WorkspaceRibbon,
@@ -918,6 +918,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       );
     }
     setVaultDocuments(resolved);
+    globalBacklinkStore.rebuild(resolved);
     return resolved;
   };
 
