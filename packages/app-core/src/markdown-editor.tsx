@@ -31,8 +31,8 @@ import {
 import { GFM } from "@lezer/markdown";
 import { bracketMatching, indentOnInput, indentUnit } from "@codemirror/language";
 import { highlightSelectionMatches, openSearchPanel, searchKeymap } from "@codemirror/search";
-import { EditorState } from "@codemirror/state";
-import { EditorView, keymap, type Command } from "@codemirror/view";
+import { EditorState, StateField, StateEffect } from "@codemirror/state";
+import { EditorView, keymap, type Command, Decoration, type DecorationSet } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
 import { DropdownMenu } from "radix-ui";
 import { Spinner } from "@flux/shared-ui/components/spinner";
@@ -245,18 +245,49 @@ export const REFERENCE_DOCUMENTS: DemoDocument[] = [
   },
 ];
 
+const addHighlight = StateEffect.define<{ from: number; to: number }>();
+const removeHighlight = StateEffect.define<null>();
+
+const highlightField = StateField.define<DecorationSet>({
+  create() {
+    return Decoration.none;
+  },
+  update(highlights, tr) {
+    highlights = highlights.map(tr.changes);
+    for (const e of tr.effects) {
+      if (e.is(addHighlight)) {
+        highlights = highlights.update({
+          add: [
+            Decoration.mark({
+              class: "bg-yellow-400/30 dark:bg-yellow-500/20 ring-2 ring-yellow-400/60 dark:ring-yellow-500/40 rounded-sm",
+            }).range(e.value.from, e.value.to),
+          ],
+        });
+      } else if (e.is(removeHighlight)) {
+        highlights = Decoration.none;
+      }
+    }
+    return highlights;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
 function MarkdownSource({
   value,
   live,
   documents,
   findRequest,
   onChange,
+  documentPath,
+  frontmatterLines = 0,
 }: {
   value: string;
   live: boolean;
   documents: DemoDocument[];
   findRequest: number;
   onChange: (value: string) => void;
+  documentPath?: string;
+  frontmatterLines?: number;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -265,6 +296,71 @@ function MarkdownSource({
   const initialValueRef = useRef(value);
   const initialLiveRef = useRef(live);
   const initialDocumentsRef = useRef(documents);
+
+  const frontmatterLinesRef = useRef(frontmatterLines);
+  useEffect(() => {
+    frontmatterLinesRef.current = frontmatterLines;
+  }, [frontmatterLines]);
+
+  const documentPathRef = useRef(documentPath);
+  useEffect(() => {
+    documentPathRef.current = documentPath;
+  }, [documentPath]);
+
+  useEffect(() => {
+    let active = true;
+    const handleNavigate = (event: CustomEvent<{ path: string; line: number; excerpt?: string }>) => {
+      const targetPath = event.detail.path;
+      if (documentPathRef.current === targetPath) {
+        const view = viewRef.current;
+        if (!view) return;
+
+        // Calculate body line number (1-based)
+        const totalLineNum = event.detail.line;
+        const bodyLineNum = Math.max(1, totalLineNum - frontmatterLinesRef.current);
+        const lineLimit = view.state.doc.lines;
+        const lineIndex = Math.min(bodyLineNum, lineLimit);
+        
+        const line = view.state.doc.line(lineIndex);
+        let anchor = line.from;
+        let head = line.to;
+
+        if (event.detail.excerpt) {
+          // Find target match in the line if excerpt is provided
+          const text = line.text;
+          const cleanExcerpt = event.detail.excerpt.trim();
+          const index = text.toLowerCase().indexOf(cleanExcerpt.toLowerCase());
+          if (index !== -1) {
+            anchor = line.from + index;
+            head = anchor + cleanExcerpt.length;
+          }
+        }
+
+        view.focus();
+        
+        // Dispatch highlight effect and update selection
+        view.dispatch({
+          selection: { anchor, head },
+          scrollIntoView: true,
+          effects: [addHighlight.of({ from: anchor, to: head })]
+        });
+
+        setTimeout(() => {
+          if (active) {
+            view.dispatch({
+              effects: [removeHighlight.of(null)]
+            });
+          }
+        }, 1500);
+      }
+    };
+
+    window.addEventListener("flux-navigate-editor", handleNavigate as EventListener);
+    return () => {
+      active = false;
+      window.removeEventListener("flux-navigate-editor", handleNavigate as EventListener);
+    };
+  }, []);
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -289,6 +385,7 @@ function MarkdownSource({
           highlightSelectionMatches(),
           markdownAssist(() => documentsRef.current),
           initialLiveRef.current ? livePreview(initialDocumentsRef.current) : [],
+          highlightField,
           keymap.of([
             ...searchKeymap,
             { key: "Enter", run: insertNewlineContinueMarkup },
@@ -761,6 +858,8 @@ export function MarkdownEditor({
           documents={documents}
           findRequest={findRequest}
           onChange={(value) => onChange(frontmatter + value)}
+          documentPath={document.path ?? document.title}
+          frontmatterLines={frontmatter ? frontmatter.split("\n").length - 1 : 0}
         />
       ) : (
         <ReadingViewBoundary key={`${document.title}:${body}`}>

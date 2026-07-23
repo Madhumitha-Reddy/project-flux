@@ -853,6 +853,9 @@ function RightContent({
   const [descending, setDescending] = useState(false);
   const [collapsedResults, setCollapsedResults] = useState(false);
   const [moreContext, setMoreContext] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [sortByCount, setSortByCount] = useState(false);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
   const filterField = filterVisible ? (
     <div className="bg-sidebar px-2 pb-2">
       <label className="flex h-8 items-center gap-2 rounded-md border bg-background px-2 [border-color:var(--layout-separator)]">
@@ -928,6 +931,31 @@ function RightContent({
   }
   if (pane === "backlinks") {
     const activeTitle = activeDocument?.path ?? activeDocument?.title ?? "Untitled";
+    
+    const titleFromPath = (path: string) => {
+      return path.split("/").pop()?.replace(/\.(md|markdown)$/i, "") ?? path;
+    };
+
+    const highlightQuery = (text: string, query: string) => {
+      if (!query.trim()) return <span>{text}</span>;
+      const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(`(${escapedQuery})`, "gi");
+      const parts = text.split(regex);
+      return (
+        <span>
+          {parts.map((part, idx) =>
+            regex.test(part) ? (
+              <mark key={idx} className="bg-primary/10 text-primary font-semibold px-0.5 rounded-sm">
+                {part}
+              </mark>
+            ) : (
+              part
+            )
+          )}
+        </span>
+      );
+    };
+
     const groupMentions = (mentions: DocumentMention[]) => {
       const grouped = new Map<string, DocumentMention[]>();
       for (const mention of mentions) {
@@ -939,64 +967,130 @@ function RightContent({
         group.push(mention);
         grouped.set(mention.source, group);
       }
-      return [...grouped].sort(([left], [right]) =>
-        descending ? right.localeCompare(left) : left.localeCompare(right)
-      );
+      return [...grouped].sort(([left, leftMentions], [right, rightMentions]) => {
+        if (sortByCount) {
+          const compareCounts = rightMentions.length - leftMentions.length;
+          return descending ? -compareCounts : compareCounts;
+        }
+        return descending ? right.localeCompare(left) : left.localeCompare(right);
+      });
     };
-    const linked = groupMentions(linkedMentionsFor(documents, activeTitle));
-    const unlinked = groupMentions(unlinkedMentionsFor(documents, activeTitle));
-    const mentionRows = (groups: Array<[string, DocumentMention[]]>, linkedMention: boolean) =>
-      groups.map(([source, mentions]) => (
-        <button
-          key={`${linkedMention ? "linked" : "unlinked"}-${source}`}
-          type="button"
-          onClick={() => onOpenDocument(source)}
-          className="group w-full rounded-md px-1 py-2 text-left hover:bg-accent/60"
-        >
-          <span className="flex items-center gap-2">
-            <Network className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate">{source}</span>
-            <span className="text-[10px] text-muted-foreground">{mentions.length}</span>
-          </span>
-          {moreContext
-            ? mentions.slice(0, 4).map((mention) => (
-                <span
-                  key={`${mention.line}-${mention.excerpt}`}
-                  className="ml-5 mt-1 line-clamp-2 block border-l pl-2 text-[10px] leading-4 text-muted-foreground [border-color:var(--layout-separator)]"
-                >
-                  <span className="mr-1 opacity-60">L{mention.line}</span>
-                  {mention.excerpt}
+
+    // decoupled performance: raw backlink indexing only runs when documents/activeTitle/refreshTrigger changes
+    const rawLinkedMentions = useMemo(() => {
+      return linkedMentionsFor(documents, activeTitle);
+    }, [documents, activeTitle, refreshTrigger]);
+
+    const rawUnlinkedMentions = useMemo(() => {
+      return unlinkedMentionsFor(documents, activeDocument.title);
+    }, [documents, activeDocument.title, refreshTrigger]);
+
+    // group & search filtering: running instantly in O(N)
+    const linked = useMemo(() => {
+      return groupMentions(rawLinkedMentions);
+    }, [rawLinkedMentions, filter, descending, sortByCount]);
+
+    const unlinked = useMemo(() => {
+      return groupMentions(rawUnlinkedMentions);
+    }, [rawUnlinkedMentions, filter, descending, sortByCount]);
+
+    const totalLinkedCount = linked.reduce((sum, [, ms]) => sum + ms.length, 0);
+    const totalUnlinkedCount = unlinked.reduce((sum, [, ms]) => sum + ms.length, 0);
+
+    const handleCollapseAll = () => {
+      const next = { ...expandedGroups };
+      for (const [source] of linked) {
+        next[`${activeTitle}::${source}`] = false;
+      }
+      for (const [source] of unlinked) {
+        next[`${activeTitle}::${source}`] = false;
+      }
+      setExpandedGroups(next);
+    };
+
+    const handleExpandAll = () => {
+      const next = { ...expandedGroups };
+      for (const [source] of linked) {
+        next[`${activeTitle}::${source}`] = true;
+      }
+      for (const [source] of unlinked) {
+        next[`${activeTitle}::${source}`] = true;
+      }
+      setExpandedGroups(next);
+    };
+
+    const toggleGroupExpanded = (source: string) => {
+      const key = `${activeTitle}::${source}`;
+      setExpandedGroups((prev) => ({
+        ...prev,
+        [key]: prev[key] === false, // toggle: if undefined (default true), toggle to false; if false, toggle to true (which is true)
+      }));
+    };
+
+    const renderGroupedMentions = (groups: Array<[string, DocumentMention[]]>) => {
+      return groups.map(([source, mentions]) => {
+        const isExpanded = expandedGroups[`${activeTitle}::${source}`] !== false;
+        return (
+          <div key={source} className="mb-2 space-y-1">
+            <div className="flex items-center justify-between py-1 px-1.5 hover:bg-accent/40 rounded-md group select-none">
+              <button
+                type="button"
+                onClick={() => toggleGroupExpanded(source)}
+                className="flex items-center gap-1.5 min-w-0 flex-1 text-left text-xs font-semibold text-foreground outline-none"
+              >
+                <ChevronRight className={`size-3.5 shrink-0 transition-transform text-muted-foreground ${isExpanded ? "rotate-90" : ""}`} />
+                <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate">{titleFromPath(source)}</span>
+                <span className="text-[10px] bg-muted/65 text-muted-foreground px-1.5 py-0.2 rounded-full font-medium ml-1">
+                  {mentions.length}
                 </span>
-              ))
-            : null}
-        </button>
-      ));
+              </button>
+              <button
+                type="button"
+                title="Open note"
+                onClick={() => onOpenDocument(source)}
+                className="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground hover:text-foreground rounded-sm hover:bg-accent/60 outline-none"
+              >
+                <ExternalLink className="size-3" />
+              </button>
+            </div>
+            {isExpanded && (
+              <div className="space-y-1">
+                {mentions.map((mention, idx) => (
+                  <button
+                    key={`${mention.line}-${idx}`}
+                    type="button"
+                    onClick={() => {
+                      onOpenDocument(source);
+                      const detail = { path: source, line: mention.line, excerpt: mention.excerpt };
+                      const dispatch = () => window.dispatchEvent(new CustomEvent("flux-navigate-editor", { detail }));
+                      dispatch();
+                      setTimeout(dispatch, 30);
+                      setTimeout(dispatch, 100);
+                      setTimeout(dispatch, 250);
+                    }}
+                    className="w-full flex flex-col items-start gap-0.5 ml-4 pl-3 py-1.5 text-left border-l border-[var(--layout-separator)] hover:bg-accent/40 rounded-r-md transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                      <span className="font-mono bg-muted/60 px-1 py-0.2 rounded">L{mention.line}</span>
+                    </div>
+                    <div className="text-[11px] leading-relaxed text-muted-foreground/90 whitespace-pre-wrap break-words">
+                      {highlightQuery(mention.excerpt, activeDocument.title)}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      });
+    };
+
     return (
       <SidebarPane
         controls={
           <>
             <SidebarToolbar>
-              <IconButton
-                label="Collapse results"
-                active={collapsedResults}
-                onClick={() => setCollapsedResults((current) => !current)}
-              >
-                <ListCollapse className="size-3.5" />
-              </IconButton>
-              <IconButton
-                label="Show more context"
-                active={moreContext}
-                onClick={() => setMoreContext((current) => !current)}
-              >
-                <ChevronsUpDown className="size-3.5" />
-              </IconButton>
-              <IconButton
-                label="Change sort order"
-                active={descending}
-                onClick={() => setDescending((current) => !current)}
-              >
-                <ListFilter className="size-3.5" />
-              </IconButton>
               <IconButton
                 label="Show search filter"
                 active={filterVisible}
@@ -1004,30 +1098,73 @@ function RightContent({
               >
                 <Search className="size-3.5" />
               </IconButton>
+              <IconButton
+                label="Expand all note groups"
+                onClick={handleExpandAll}
+              >
+                <ChevronsUpDown className="size-3.5" />
+              </IconButton>
+              <IconButton
+                label="Collapse all note groups"
+                onClick={handleCollapseAll}
+              >
+                <ListCollapse className="size-3.5" />
+              </IconButton>
+              <IconButton
+                label={sortByCount ? "Sort alphabetically" : "Sort by count"}
+                active={sortByCount}
+                onClick={() => setSortByCount((current) => !current)}
+              >
+                <ListFilter className="size-3.5" />
+              </IconButton>
+              <IconButton
+                label={descending ? "Sort ascending" : "Sort descending"}
+                active={descending}
+                onClick={() => setDescending((current) => !current)}
+              >
+                {descending ? <ArrowUp className="size-3.5" /> : <ArrowDown className="size-3.5" />}
+              </IconButton>
+              <IconButton
+                label="Refresh backlinks"
+                onClick={() => setRefreshTrigger((t) => t + 1)}
+              >
+                <RefreshCw className="size-3.5" />
+              </IconButton>
             </SidebarToolbar>
             {filterField}
           </>
         }
       >
-        <div className="px-3 py-2 text-xs">
-          <div className="flex items-center justify-between py-1 font-medium text-foreground">
-            <span>Linked mentions</span>
-            <span className="text-[10px] text-muted-foreground">{linked.length}</span>
+        <div className="px-3 py-2 text-xs h-full overflow-y-auto">
+          {/* Linked Mentions Section */}
+          <div className="mb-4">
+            <div className="flex items-center justify-between py-1 font-medium text-foreground mb-1">
+              <span>Linked mentions</span>
+              <span className="text-[10px] bg-muted/65 text-muted-foreground px-2 py-0.5 rounded-full font-semibold">
+                {totalLinkedCount}
+              </span>
+            </div>
+            {totalLinkedCount > 0 ? (
+              renderGroupedMentions(linked)
+            ) : (
+              <p className="py-2 px-1 text-muted-foreground italic">No backlinks found.</p>
+            )}
           </div>
-          {collapsedResults ? null : linked.length ? (
-            mentionRows(linked, true)
-          ) : (
-            <p className="py-2 text-muted-foreground">No backlinks found.</p>
-          )}
-          <div className="mt-3 flex items-center justify-between py-1 font-medium text-muted-foreground">
-            <span>Unlinked mentions</span>
-            <span className="text-[10px]">{unlinked.length}</span>
+
+          {/* Unlinked Mentions Section */}
+          <div>
+            <div className="flex items-center justify-between py-1 font-medium text-foreground mb-1">
+              <span>Unlinked mentions</span>
+              <span className="text-[10px] bg-muted/65 text-muted-foreground px-2 py-0.5 rounded-full font-semibold">
+                {totalUnlinkedCount}
+              </span>
+            </div>
+            {totalUnlinkedCount > 0 ? (
+              renderGroupedMentions(unlinked)
+            ) : (
+              <p className="py-2 px-1 text-muted-foreground italic">No unlinked mentions found.</p>
+            )}
           </div>
-          {collapsedResults ? null : unlinked.length ? (
-            mentionRows(unlinked, false)
-          ) : (
-            <p className="py-2 text-muted-foreground">No unlinked mentions found.</p>
-          )}
         </div>
       </SidebarPane>
     );
