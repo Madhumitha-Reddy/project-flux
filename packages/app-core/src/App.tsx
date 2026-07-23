@@ -862,9 +862,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     if (!runtime.client) return [];
     const previousDocuments = new Map(savedDocumentsRef.current);
     const markdownEntries = entries.filter(
-      (entry) =>
-        (entry.kind === "markdown" || entry.kind === "text") &&
-        savedDocumentsRef.current.has(entry.path)
+      (entry) => entry.kind === "markdown" || entry.kind === "text"
     );
     const loaded = await Promise.all(
       markdownEntries.map(async (entry) => {
