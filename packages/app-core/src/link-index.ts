@@ -39,7 +39,6 @@ function aliasesFor(document: DemoDocument) {
 }
 
 const IGNORED_PATH_PATTERNS = [
-  /(?:^|\/)node_modules(?:\/|$)/i,
   /(?:^|\/)\.git(?:\/|$)/i,
   /(?:^|\/)\.turbo(?:\/|$)/i,
   /(?:^|\/)\.next(?:\/|$)/i,
