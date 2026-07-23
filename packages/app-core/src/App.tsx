@@ -1016,7 +1016,11 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       nextLeafIdRef.current = maxWorkspaceNodeId(nextRoot) + 1;
     }
     if (persisted?.leftSidebarPane) setLeftSidebarPane(persisted.leftSidebarPane);
-    if (persisted?.rightSidebarPane) setRightSidebarPane(persisted.rightSidebarPane);
+    if (persisted?.rightSidebarPane) {
+      setRightSidebarPane(persisted.rightSidebarPane === "outline" ? "backlinks" : persisted.rightSidebarPane);
+    } else {
+      setRightSidebarPane("backlinks");
+    }
     if (persisted?.layout) setLayoutState(persisted.layout);
     if (persisted?.expandedFolders) setExpandedFolders(persisted.expandedFolders);
     setSessionVaultId(info.id);
