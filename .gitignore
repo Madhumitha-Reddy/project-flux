@@ -56,6 +56,7 @@ bin/
 
 # Flux derived vault state
 **/.flux/
+**/.obsidian/
 
 # Docker
 docker-compose.override.yml

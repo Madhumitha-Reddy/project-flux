@@ -31,6 +31,7 @@ interface VaultExplorerProps {
   documents: DemoDocument[];
   expandedFolders?: string[];
   onExpandedFoldersChange?: (paths: string[]) => void;
+  onExpandFolder?: (path: string) => void;
 }
 
 const menuClass =
@@ -79,6 +80,7 @@ export function VaultExplorer({
   documents,
   expandedFolders,
   onExpandedFoldersChange,
+  onExpandFolder,
 }: VaultExplorerProps) {
   const [selectedFolder, setSelectedFolder] = useState<string>();
   const [localExpandedPaths, setLocalExpandedPaths] = useState<Set<string>>(new Set());
@@ -286,7 +288,10 @@ export function VaultExplorer({
           updateExpandedPaths((current) => {
             const next = new Set(current);
             if (next.has(entry.path)) next.delete(entry.path);
-            else next.add(entry.path);
+            else {
+              next.add(entry.path);
+              onExpandFolder?.(entry.path);
+            }
             return next;
           });
         }}

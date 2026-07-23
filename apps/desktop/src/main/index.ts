@@ -1,9 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, type WebContents } from "electron";
 import { autoUpdater } from "electron-updater";
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
+import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import * as path from "path";
 
@@ -17,23 +15,77 @@ const isDev = Boolean(devServerUrl);
 const externalBackendOrigin = process.env.FLUX_BACKEND_URL;
 let backendOrigin = externalBackendOrigin ?? "";
 let backendToken = "";
+let backendHeartbeat: ReturnType<typeof setInterval> | null = null;
 const backendStartupAttempts = 300;
 
-async function availableLoopbackPort() {
-  return new Promise<number>((resolve, reject) => {
-    const server = createServer();
-    server.unref();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (!address || typeof address === "string") {
-        server.close();
-        reject(new Error("Could not allocate backend port"));
-        return;
-      }
-      server.close((error) => (error ? reject(error) : resolve(address.port)));
+interface RuntimeDescriptor {
+  pid: number;
+  origin: string;
+  token: string;
+  protocol: number;
+  version: string;
+}
+
+async function attachPublishedBackend() {
+  try {
+    const descriptor = JSON.parse(
+      await readFile(path.join(app.getPath("userData"), "runtime", "daemon.json"), "utf8")
+    ) as Partial<RuntimeDescriptor>;
+    const origin = new URL(descriptor.origin ?? "");
+    if (
+      descriptor.protocol !== 1 ||
+      !Number.isInteger(descriptor.pid) ||
+      descriptor.pid! <= 0 ||
+      !descriptor.token ||
+      descriptor.version !== app.getVersion() ||
+      origin.protocol !== "http:" ||
+      (origin.hostname !== "127.0.0.1" && origin.hostname !== "::1")
+    ) {
+      return false;
+    }
+    backendOrigin = origin.origin;
+    backendToken = descriptor.token;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function stopStalePublishedBackend(force = false) {
+  try {
+    const descriptor = JSON.parse(
+      await readFile(path.join(app.getPath("userData"), "runtime", "daemon.json"), "utf8")
+    ) as Partial<RuntimeDescriptor>;
+    if (!force && !isDev && descriptor.version === app.getVersion()) return;
+    if (!Number.isInteger(descriptor.pid) || descriptor.pid! <= 0 || !descriptor.token) return;
+    const origin = new URL(descriptor.origin ?? "");
+    if (
+      origin.protocol !== "http:" ||
+      (origin.hostname !== "127.0.0.1" && origin.hostname !== "::1")
+    ) {
+      return;
+    }
+    const response = await fetch(`${origin.origin}/api/v1/status`, {
+      headers: { "X-Flux-Desktop-Token": descriptor.token },
+      signal: AbortSignal.timeout(1_000),
     });
-  });
+    if (!response.ok) return;
+    const status = (await response.json()) as { version?: unknown };
+    if (status.version !== descriptor.version) return;
+    process.kill(descriptor.pid!, "SIGTERM");
+    for (let attempt = 0; attempt < 50; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      try {
+        process.kill(descriptor.pid!, 0);
+      } catch {
+        break;
+      }
+    }
+  } catch {
+    // No stale runtime is published.
+  }
+  backendOrigin = "";
+  backendToken = "";
 }
 
 function backendHeaders() {
@@ -128,19 +180,20 @@ async function ensureBackend() {
     throw new Error(`Configured FLUX backend is unavailable at ${externalBackendOrigin}`);
   }
 
-  const port = await availableLoopbackPort();
-  backendOrigin = `http://127.0.0.1:${port}`;
-  backendToken = randomBytes(32).toString("hex");
+  if (!isDev && (await attachPublishedBackend()) && (await backendReady())) return;
+  await stopStalePublishedBackend(isDev || Boolean(backendOrigin));
+
   const backendEnvironment = {
     ...process.env,
     ENVIRONMENT: "desktop",
     HOST: "127.0.0.1",
-    PORT: String(port),
+    PORT: "0",
     FLUX_APP_DATA_DIR: app.getPath("userData"),
-    FLUX_DESKTOP_TOKEN: backendToken,
+    FLUX_DESKTOP_TOKEN: "",
+    FLUX_DAEMON_IDLE_TIMEOUT: "2m",
   };
   if (isDev) {
-    // Vite restarts this process; go run recompiles backend changes on reload.
+    // Main-process reload restarts daemon, so go run recompiles backend changes.
     const serverDirectory = path.resolve(currentDirectory, "../../../server");
     backendProcess = spawn(
       process.env.GO_BIN ?? "/usr/local/go/bin/go",
@@ -148,18 +201,20 @@ async function ensureBackend() {
       {
         env: backendEnvironment,
         stdio: "inherit",
-        detached: process.platform !== "win32",
+        detached: true,
       }
     );
   } else {
     backendProcess = spawn(path.join(process.resourcesPath, "flux-server"), [], {
       env: backendEnvironment,
       stdio: "inherit",
+      detached: true,
     });
   }
+  backendProcess.unref();
   for (let attempt = 0; attempt < backendStartupAttempts; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 100));
-    if (await backendReady()) return;
+    if ((await attachPublishedBackend()) && (await backendReady())) return;
   }
   throw new Error("FLUX backend did not become ready");
 }
@@ -202,6 +257,8 @@ function createWindow(targetUrl?: string) {
 
 app.whenReady().then(async () => {
   await ensureBackend();
+  backendHeartbeat = setInterval(() => void backendReady(), 30_000);
+  backendHeartbeat.unref();
   createWindow();
 
   app.on("activate", () => {
@@ -218,15 +275,9 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
-  if (backendProcess?.pid && process.platform !== "win32") {
-    try {
-      process.kill(-backendProcess.pid, "SIGTERM");
-    } catch {
-      // Backend already exited.
-    }
-  } else {
-    backendProcess?.kill();
-  }
+  // Shared runtime may still serve MCP clients after Electron closes.
+  if (backendHeartbeat) clearInterval(backendHeartbeat);
+  backendHeartbeat = null;
   backendProcess = null;
 });
 

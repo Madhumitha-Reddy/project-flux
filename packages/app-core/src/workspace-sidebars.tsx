@@ -24,6 +24,7 @@ import {
   Network,
   PlusCircle,
   MinusCircle,
+  Puzzle,
   RefreshCw,
   Search,
   Settings2,
@@ -31,7 +32,12 @@ import {
   X,
 } from "lucide-react";
 import { AlertDialog, HoverCard } from "radix-ui";
-import type { FileEntry } from "@flux/bridge-contract";
+import type {
+  DocumentReferences,
+  FileEntry,
+  SearchResult,
+  VaultFacets,
+} from "@flux/bridge-contract";
 import { getFrontmatterProperties, splitFrontmatter } from "./frontmatter";
 import type { DemoDocument } from "./markdown-editor";
 import {
@@ -480,26 +486,124 @@ function ToggleRow({
   );
 }
 
-function SearchPane({
-  documents,
-  onOpenDocument,
+function searchHighlightTerms(query: string) {
+  const content: string[] = [];
+  const path: string[] = [];
+  for (const token of query.split(/\s+/)) {
+    const separator = token.indexOf(":");
+    const operator = separator > 0 ? token.slice(0, separator).toLowerCase() : "";
+    const value = separator > 0 ? token.slice(separator + 1) : token;
+    const terms = value.match(/[\p{L}\p{N}]+/gu) ?? [];
+    if (operator === "path" || operator === "file") path.push(...terms);
+    else if (operator !== "tag" && operator !== "property") content.push(...terms);
+  }
+  return { content, path };
+}
+
+function HighlightedText({
+  text,
+  terms,
+  matchCase,
 }: {
-  documents: DemoDocument[];
-  onOpenDocument: (title: string) => void;
+  text: string;
+  terms: string[];
+  matchCase: boolean;
 }) {
-  const [query, setQuery] = useState("");
+  const uniqueTerms = [...new Set(terms.filter(Boolean))].sort((a, b) => b.length - a.length);
+  if (!uniqueTerms.length) return text;
+  const escaped = uniqueTerms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const pattern = new RegExp(`(${escaped.join("|")})`, matchCase ? "g" : "gi");
+  return text.split(pattern).map((part, index) => {
+    const matched = uniqueTerms.some((term) =>
+      matchCase ? part === term : part.toLocaleLowerCase() === term.toLocaleLowerCase()
+    );
+    return matched ? (
+      <mark
+        // Text plus position is stable for a given result.
+        key={`${part}-${index}`}
+        className="rounded-[2px] px-px font-semibold text-inherit"
+        style={{ backgroundColor: "rgba(250, 204, 21, 0.42)" }}
+      >
+        {part}
+      </mark>
+    ) : (
+      part
+    );
+  });
+}
+
+function SearchPane({
+  searchVault,
+  onOpenDocument,
+  query,
+  onQueryChange,
+}: {
+  searchVault?: (query: string, offset?: number, matchCase?: boolean) => Promise<SearchResult[]>;
+  onOpenDocument: (title: string) => void;
+  query: string;
+  onQueryChange: (query: string) => void;
+}) {
   const [matchCase, setMatchCase] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [collapseResults, setCollapseResults] = useState(false);
   const [moreContext, setMoreContext] = useState(false);
   const [explainTerms, setExplainTerms] = useState(false);
-  const normalizedQuery = matchCase ? query : query.toLocaleLowerCase();
-  const results = query
-    ? documents.filter((document) => {
-        const haystack = `${document.title}\n${document.content}`;
-        return (matchCase ? haystack : haystack.toLocaleLowerCase()).includes(normalizedQuery);
-      })
-    : [];
+  const [results, setResults] = useState<SearchResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [loadedCount, setLoadedCount] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const displayedResults = query.trim() ? results : [];
+  const displayedError = query.trim() ? error : "";
+  const highlightTerms = useMemo(() => searchHighlightTerms(query), [query]);
+
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!trimmed || !searchVault) return;
+    let current = true;
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      setError("");
+      setHasMore(false);
+      setLoadedCount(0);
+      void searchVault(trimmed, 0, matchCase)
+        .then((next) => {
+          if (!current) return;
+          setResults(next);
+          setLoadedCount(next.length);
+          setHasMore(next.length === 100);
+        })
+        .catch((reason) => {
+          if (current) setError(reason instanceof Error ? reason.message : "Search failed");
+        })
+        .finally(() => {
+          if (current) setLoading(false);
+        });
+    }, 180);
+    return () => {
+      current = false;
+      window.clearTimeout(timer);
+    };
+  }, [matchCase, query, searchVault]);
+
+  const loadMore = async () => {
+    if (!searchVault || !query.trim() || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const next = await searchVault(query.trim(), loadedCount, matchCase);
+      setResults((current) => [
+        ...current,
+        ...next.filter((result) => !current.some((existing) => existing.path === result.path)),
+      ]);
+      setLoadedCount((current) => current + next.length);
+      setHasMore(next.length === 100);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Search failed");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   return (
     <>
@@ -509,12 +613,12 @@ function SearchPane({
           <input
             aria-label="Search vault"
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => onQueryChange(event.target.value)}
             placeholder="Search..."
             className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
           />
           {query ? (
-            <button type="button" aria-label="Clear search" onClick={() => setQuery("")}>
+            <button type="button" aria-label="Clear search" onClick={() => onQueryChange("")}>
               <X className="size-3.5 text-muted-foreground" />
             </button>
           ) : null}
@@ -535,7 +639,7 @@ function SearchPane({
         </IconButton>
       </div>
       {showSettings ? (
-        <div className="space-y-1 px-3 pb-2 text-xs">
+        <div className="space-y-1 border-b px-3 pb-2 text-xs [border-color:var(--layout-separator)]">
           <ToggleRow
             label="Collapse results"
             checked={collapseResults}
@@ -547,28 +651,90 @@ function SearchPane({
             checked={explainTerms}
             onChange={setExplainTerms}
           />
+          {explainTerms ? (
+            <div className="rounded-md bg-muted/45 px-2.5 py-2 font-mono text-[10px] leading-5 text-muted-foreground">
+              <div>
+                <span className="text-foreground">path:</span> folder or path
+              </div>
+              <div>
+                <span className="text-foreground">file:</span> file name
+              </div>
+              <div>
+                <span className="text-foreground">tag:</span> exact tag
+              </div>
+              <div>
+                <span className="text-foreground">property:</span> frontmatter key
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
-      <div className="px-3 text-[11px] text-muted-foreground">
-        {results.length
-          ? results.map((result) => (
+      <div className="px-2 pb-3 text-[11px] text-muted-foreground">
+        {query ? (
+          <div className="flex items-center justify-between border-b px-1 py-2 [border-color:var(--layout-separator)]">
+            <span>
+              {loading
+                ? "Searching index…"
+                : `${displayedResults.length}${hasMore ? "+" : ""} results`}
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="font-mono text-[9px]">FTS5</span>
+              {hasMore ? (
+                <button
+                  type="button"
+                  disabled={loadingMore}
+                  onClick={() => void loadMore()}
+                  className="rounded border px-1.5 py-0.5 font-medium text-foreground hover:bg-accent disabled:opacity-50 [border-color:var(--layout-separator)]"
+                >
+                  {loadingMore ? "Loading…" : "+100"}
+                </button>
+              ) : null}
+            </span>
+          </div>
+        ) : null}
+        {displayedError ? <p className="px-1 py-3 text-destructive">{displayedError}</p> : null}
+        {!displayedError && displayedResults.length
+          ? displayedResults.map((result) => (
               <button
-                key={result.title}
+                key={result.path}
                 type="button"
-                onClick={() => onOpenDocument(result.title)}
-                className="block w-full rounded-md px-1 py-2 text-left hover:bg-accent/60 hover:text-foreground"
+                onClick={() => onOpenDocument(result.path)}
+                className="mt-1 block w-full rounded-md px-2 py-2 text-left outline-none hover:bg-accent/60 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
               >
-                <span className="block font-medium text-foreground">{result.title}</span>
-                {!collapseResults && moreContext ? (
-                  <span className="mt-1 line-clamp-2 block leading-4">
-                    {documentSummary(result).preview}
+                <span className="block truncate font-medium text-foreground">
+                  <HighlightedText
+                    text={result.title}
+                    terms={[...highlightTerms.content, ...highlightTerms.path]}
+                    matchCase={matchCase}
+                  />
+                </span>
+                <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">
+                  <HighlightedText
+                    text={result.path}
+                    terms={[...highlightTerms.content, ...highlightTerms.path]}
+                    matchCase={matchCase}
+                  />
+                </span>
+                {!collapseResults && result.excerpt ? (
+                  <span
+                    className={`mt-1.5 block border-l pl-2 leading-4 [border-color:var(--layout-separator)] ${
+                      moreContext ? "line-clamp-4" : "line-clamp-2"
+                    }`}
+                  >
+                    <HighlightedText
+                      text={result.excerpt}
+                      terms={highlightTerms.content}
+                      matchCase={matchCase}
+                    />
                   </span>
                 ) : null}
               </button>
             ))
-          : query
+          : !loading && query
             ? "No matches found."
-            : "Search notes, tags, and properties"}
+            : !query
+              ? "Search indexed note content, paths, tags, and properties."
+              : null}
       </div>
     </>
   );
@@ -677,6 +843,10 @@ function LeftSidebar({
   onPreviewPath,
   expandedFolders,
   onExpandedFoldersChange,
+  onExpandFolder,
+  searchVault,
+  searchQuery,
+  onSearchQueryChange,
 }: {
   activeTitle: string;
   pane: LeftPane;
@@ -695,6 +865,10 @@ function LeftSidebar({
   onPreviewPath?: (path: string) => Promise<string | null>;
   expandedFolders?: string[];
   onExpandedFoldersChange?: (paths: string[]) => void;
+  onExpandFolder?: (path: string) => void;
+  searchVault?: (query: string, offset?: number, matchCase?: boolean) => Promise<SearchResult[]>;
+  searchQuery: string;
+  onSearchQueryChange: (query: string) => void;
 }) {
   return (
     <section
@@ -719,6 +893,7 @@ function LeftSidebar({
               onPreview={(path) => onPreviewPath?.(path) ?? Promise.resolve(null)}
               expandedFolders={expandedFolders}
               onExpandedFoldersChange={onExpandedFoldersChange}
+              onExpandFolder={onExpandFolder}
             />
           ) : (
             <FileExplorer
@@ -734,7 +909,12 @@ function LeftSidebar({
           className="flux-editor-scroll flux-sidebar-scroll h-full min-h-0 overflow-x-clip overflow-y-auto"
           hidden={pane !== "search"}
         >
-          <SearchPane documents={documents} onOpenDocument={onOpenDocument} />
+          <SearchPane
+            searchVault={searchVault}
+            query={searchQuery}
+            onQueryChange={onSearchQueryChange}
+            onOpenDocument={onOpenDocument}
+          />
         </div>
         <div
           className="flux-editor-scroll flux-sidebar-scroll h-full min-h-0 overflow-x-clip overflow-y-auto"
@@ -752,21 +932,88 @@ function RightContent({
   activeDocument,
   documents,
   onOpenDocument,
-  onPropertyChange,
-  onAddProperty,
+  loadReferences,
+  loadFacets,
+  onSearchTag,
+  onNavigateHeading,
+  onOpenReference,
 }: {
   pane: RightPane;
   activeDocument: DemoDocument | null;
   documents: DemoDocument[];
   onOpenDocument: (title: string) => void;
-  onPropertyChange: (key: string, value: string) => void;
-  onAddProperty: () => void;
+  loadReferences?: (path: string) => Promise<DocumentReferences>;
+  loadFacets?: () => Promise<VaultFacets>;
+  onSearchTag?: (tag: string) => void;
+  onNavigateHeading?: (heading: string, line: number) => void;
+  onOpenReference?: (path: string, line: number) => void;
 }) {
   const [filterVisible, setFilterVisible] = useState(false);
   const [filter, setFilter] = useState("");
   const [descending, setDescending] = useState(false);
   const [collapsedResults, setCollapsedResults] = useState(false);
   const [moreContext, setMoreContext] = useState(false);
+  const [references, setReferences] = useState<DocumentReferences>();
+  const [referencePath, setReferencePath] = useState("");
+  const [facets, setFacets] = useState<VaultFacets>();
+  const [referenceLoading, setReferenceLoading] = useState(false);
+  const [referenceError, setReferenceError] = useState("");
+  const [facetLoading, setFacetLoading] = useState(false);
+  const [facetError, setFacetError] = useState("");
+  const activePath = activeDocument?.path;
+  const visibleReferences = referencePath === activePath ? references : undefined;
+  const loading = pane === "backlinks" || pane === "outgoing" ? referenceLoading : facetLoading;
+  const loadError = pane === "backlinks" || pane === "outgoing" ? referenceError : facetError;
+
+  useEffect(() => {
+    if (!activePath || !loadReferences || (pane !== "backlinks" && pane !== "outgoing")) return;
+    let current = true;
+    queueMicrotask(() => {
+      if (!current) return;
+      setReferenceLoading(true);
+      setReferenceError("");
+    });
+    void loadReferences(activePath)
+      .then((result) => {
+        if (current) {
+          setReferences(result);
+          setReferencePath(activePath);
+        }
+      })
+      .catch((error) => {
+        if (current)
+          setReferenceError(error instanceof Error ? error.message : "Could not load links");
+      })
+      .finally(() => {
+        if (current) setReferenceLoading(false);
+      });
+    return () => {
+      current = false;
+    };
+  }, [activePath, loadReferences, pane]);
+
+  useEffect(() => {
+    if (!loadFacets || (pane !== "tags" && pane !== "properties")) return;
+    let current = true;
+    queueMicrotask(() => {
+      if (!current) return;
+      setFacetLoading(true);
+      setFacetError("");
+    });
+    void loadFacets()
+      .then((result) => {
+        if (current) setFacets(result);
+      })
+      .catch((error) => {
+        if (current) setFacetError(error instanceof Error ? error.message : "Could not load index");
+      })
+      .finally(() => {
+        if (current) setFacetLoading(false);
+      });
+    return () => {
+      current = false;
+    };
+  }, [loadFacets, pane]);
   const filterField = filterVisible ? (
     <div className="bg-sidebar px-2 pb-2">
       <label className="flex h-8 items-center gap-2 rounded-md border bg-background px-2 [border-color:var(--layout-separator)]">
@@ -793,7 +1040,12 @@ function RightContent({
   if (pane === "outline") {
     const headings = activeDocument
       ? [...splitFrontmatter(activeDocument.content).body.matchAll(/^(#{1,6})\s+(.+)$/gm)].map(
-          (match) => ({ level: match[1].length, title: match[2] })
+          (match) => ({
+            level: match[1].length,
+            title: match[2],
+            line: splitFrontmatter(activeDocument.content).body.slice(0, match.index).split("\n")
+              .length,
+          })
         )
       : [];
     const visibleHeadings = headings.filter(({ title }) =>
@@ -829,6 +1081,7 @@ function RightContent({
                 <button
                   key={`${heading.title}-${index}`}
                   type="button"
+                  onClick={() => onNavigateHeading?.(heading.title, heading.line)}
                   className="flex w-full items-center gap-1 rounded-md py-1.5 pr-2 text-left hover:bg-accent/60"
                   style={{ paddingLeft: 8 + (heading.level - 1) * 14 }}
                 >
@@ -857,33 +1110,49 @@ function RightContent({
         descending ? right.localeCompare(left) : left.localeCompare(right)
       );
     };
-    const linked = groupMentions(linkedMentionsFor(documents, activeTitle));
-    const unlinked = groupMentions(unlinkedMentionsFor(documents, activeTitle));
+    const linkedMentions = visibleReferences
+      ? visibleReferences.linked.map((mention) => ({
+          ...mention,
+          target: activeTitle,
+        }))
+      : linkedMentionsFor(documents, activeTitle);
+    const unlinkedMentions = visibleReferences
+      ? visibleReferences.unlinked.map((mention) => ({
+          ...mention,
+          target: activeTitle,
+        }))
+      : unlinkedMentionsFor(documents, activeDocument.title);
+    const linked = groupMentions(linkedMentions);
+    const unlinked = groupMentions(unlinkedMentions);
     const mentionRows = (groups: Array<[string, DocumentMention[]]>, linkedMention: boolean) =>
       groups.map(([source, mentions]) => (
-        <button
+        <div
           key={`${linkedMention ? "linked" : "unlinked"}-${source}`}
-          type="button"
-          onClick={() => onOpenDocument(source)}
-          className="group w-full rounded-md px-1 py-2 text-left hover:bg-accent/60"
+          className="group w-full rounded-md px-1 py-1"
         >
-          <span className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onOpenReference?.(source, mentions[0]?.line ?? 1)}
+            className="flex w-full items-center gap-2 rounded-md py-1 text-left hover:bg-accent/60"
+          >
             <Network className="size-3.5 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1 truncate">{source}</span>
             <span className="text-[10px] text-muted-foreground">{mentions.length}</span>
-          </span>
+          </button>
           {moreContext
             ? mentions.slice(0, 4).map((mention) => (
-                <span
+                <button
+                  type="button"
                   key={`${mention.line}-${mention.excerpt}`}
-                  className="ml-5 mt-1 line-clamp-2 block border-l pl-2 text-[10px] leading-4 text-muted-foreground [border-color:var(--layout-separator)]"
+                  onClick={() => onOpenReference?.(source, mention.line)}
+                  className="ml-5 mt-1 line-clamp-2 block border-l pl-2 text-left text-[10px] leading-4 text-muted-foreground hover:text-foreground [border-color:var(--layout-separator)]"
                 >
                   <span className="mr-1 opacity-60">L{mention.line}</span>
                   {mention.excerpt}
-                </span>
+                </button>
               ))
             : null}
-        </button>
+        </div>
       ));
     return (
       <SidebarPane
@@ -924,6 +1193,8 @@ function RightContent({
         }
       >
         <div className="px-3 py-2 text-xs">
+          {loading ? <p className="py-2 text-muted-foreground">Reading link index…</p> : null}
+          {loadError ? <p className="py-2 text-destructive">{loadError}</p> : null}
           <div className="flex items-center justify-between py-1 font-medium text-foreground">
             <span>Linked mentions</span>
             <span className="text-[10px] text-muted-foreground">{linked.length}</span>
@@ -948,7 +1219,11 @@ function RightContent({
   }
   if (pane === "outgoing") {
     const activeTitle = activeDocument?.path ?? activeDocument?.title ?? "Untitled";
-    const outgoing = [...(buildLinkIndex(documents).outgoing.get(activeTitle) ?? new Set<string>())]
+    const outgoing = (
+      visibleReferences
+        ? visibleReferences.outgoing
+        : [...(buildLinkIndex(documents).outgoing.get(activeTitle) ?? new Set<string>())]
+    )
       .filter((title) => title.toLocaleLowerCase().includes(filter.toLocaleLowerCase()))
       .sort((a, b) => (descending ? b.localeCompare(a) : a.localeCompare(b)));
     return (
@@ -976,6 +1251,8 @@ function RightContent({
         }
       >
         <div className="px-3 py-2 text-xs">
+          {loading ? <p className="py-2 text-muted-foreground">Reading link index…</p> : null}
+          {loadError ? <p className="py-2 text-destructive">{loadError}</p> : null}
           <div className="flex items-center justify-between py-1 font-medium">
             <span>Links</span>
             <span className="text-[10px] text-muted-foreground">{outgoing.length}</span>
@@ -991,7 +1268,9 @@ function RightContent({
               {title}
             </button>
           ))}
-          <div className="mt-3 py-1 font-medium text-muted-foreground">Unlinked mentions</div>
+          {!loading && !outgoing.length ? (
+            <p className="py-2 text-muted-foreground">No outgoing links found.</p>
+          ) : null}
         </div>
       </SidebarPane>
     );
@@ -1007,7 +1286,9 @@ function RightContent({
         if (normalized) counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
       }
     }
-    const tags = [...counts]
+    const tags = (
+      facets?.tags.map(({ name, count }) => [name, count] as [string, number]) ?? [...counts]
+    )
       .filter(([tag]) => tag.toLocaleLowerCase().includes(filter.toLocaleLowerCase()))
       .sort(([a], [b]) => (descending ? b.localeCompare(a) : a.localeCompare(b)));
     return (
@@ -1049,20 +1330,39 @@ function RightContent({
         }
       >
         <div className="px-3 py-2 text-xs">
+          {loading ? <p className="py-2 text-muted-foreground">Reading tag index…</p> : null}
+          {loadError ? <p className="py-2 text-destructive">{loadError}</p> : null}
           {collapsedResults
             ? null
             : tags.map(([tag, count]) => (
-                <div key={tag} className="flex justify-between py-1.5">
+                <button
+                  key={tag}
+                  type="button"
+                  onClick={() => onSearchTag?.(tag)}
+                  className="flex w-full justify-between rounded-md px-1 py-1.5 text-left hover:bg-accent/60"
+                >
                   <span>{moreContext ? tag.replaceAll("/", " › ") : tag}</span>
                   <span className="text-muted-foreground">{count}</span>
-                </div>
+                </button>
               ))}
+          {!loading && !tags.length ? (
+            <p className="py-2 text-muted-foreground">No tags found.</p>
+          ) : null}
         </div>
       </SidebarPane>
     );
   }
   if (pane === "properties") {
-    const properties = (activeDocument ? getFrontmatterProperties(activeDocument.content) : [])
+    const fallbackCounts = new Map<string, number>();
+    for (const document of documents) {
+      for (const property of getFrontmatterProperties(document.content)) {
+        fallbackCounts.set(property.key, (fallbackCounts.get(property.key) ?? 0) + 1);
+      }
+    }
+    const properties = (
+      facets?.properties.map(({ name, count }) => ({ key: name, count })) ??
+      [...fallbackCounts].map(([key, count]) => ({ key, count }))
+    )
       .filter(({ key }) => key.toLocaleLowerCase().includes(filter.toLocaleLowerCase()))
       .sort((a, b) => (descending ? b.key.localeCompare(a.key) : a.key.localeCompare(b.key)));
     return (
@@ -1089,24 +1389,23 @@ function RightContent({
           </>
         }
       >
-        <div className="divide-y px-3 text-xs [divide-color:var(--layout-separator)]">
+        <div className="px-3 py-2 text-xs">
+          {loading ? <p className="py-2 text-muted-foreground">Reading property index…</p> : null}
+          {loadError ? <p className="py-2 text-destructive">{loadError}</p> : null}
           {properties.map((property) => (
-            <label key={property.key} className="flex items-center justify-between gap-3 py-2">
-              <span className="shrink-0 text-muted-foreground">{property.key}</span>
-              <input
-                value={property.value}
-                onChange={(event) => onPropertyChange(property.key, event.target.value)}
-                className="min-w-0 flex-1 bg-transparent text-right outline-none"
-              />
-            </label>
+            <div
+              key={property.key}
+              className="flex items-center justify-between gap-3 rounded-md px-1 py-1.5 hover:bg-accent/50"
+            >
+              <span className="truncate text-muted-foreground">{property.key}</span>
+              <span className="text-[10px] tabular-nums text-muted-foreground">
+                {property.count}
+              </span>
+            </div>
           ))}
-          <button
-            type="button"
-            onClick={onAddProperty}
-            className="py-2 text-xs text-muted-foreground hover:text-foreground"
-          >
-            + Add property
-          </button>
+          {!loading && !properties.length ? (
+            <p className="py-2 text-muted-foreground">No properties found.</p>
+          ) : null}
         </div>
       </SidebarPane>
     );
@@ -1162,15 +1461,21 @@ function RightSidebar({
   activeDocument,
   documents,
   onOpenDocument,
-  onPropertyChange,
-  onAddProperty,
+  loadReferences,
+  loadFacets,
+  onSearchTag,
+  onNavigateHeading,
+  onOpenReference,
 }: {
   pane: RightPane;
   activeDocument: DemoDocument | null;
   documents: DemoDocument[];
   onOpenDocument: (title: string) => void;
-  onPropertyChange: (key: string, value: string) => void;
-  onAddProperty: () => void;
+  loadReferences?: (path: string) => Promise<DocumentReferences>;
+  loadFacets?: () => Promise<VaultFacets>;
+  onSearchTag?: (tag: string) => void;
+  onNavigateHeading?: (heading: string, line: number) => void;
+  onOpenReference?: (path: string, line: number) => void;
 }) {
   return (
     <section
@@ -1183,8 +1488,11 @@ function RightSidebar({
           activeDocument={activeDocument}
           documents={documents}
           onOpenDocument={onOpenDocument}
-          onPropertyChange={onPropertyChange}
-          onAddProperty={onAddProperty}
+          loadReferences={loadReferences}
+          loadFacets={loadFacets}
+          onSearchTag={onSearchTag}
+          onNavigateHeading={onNavigateHeading}
+          onOpenReference={onOpenReference}
         />
       </div>
     </section>
@@ -1228,6 +1536,10 @@ export function WorkspaceLeftSidebar({
   onPreviewPath,
   expandedFolders,
   onExpandedFoldersChange,
+  onExpandFolder,
+  searchVault,
+  searchQuery,
+  onSearchQueryChange,
 }: {
   activeTitle: string;
   pane: LeftPane;
@@ -1246,6 +1558,10 @@ export function WorkspaceLeftSidebar({
   onPreviewPath?: (path: string) => Promise<string | null>;
   expandedFolders?: string[];
   onExpandedFoldersChange?: (paths: string[]) => void;
+  onExpandFolder?: (path: string) => void;
+  searchVault?: (query: string, offset?: number, matchCase?: boolean) => Promise<SearchResult[]>;
+  searchQuery: string;
+  onSearchQueryChange: (query: string) => void;
 }) {
   return (
     <LeftSidebar
@@ -1266,6 +1582,10 @@ export function WorkspaceLeftSidebar({
       onPreviewPath={onPreviewPath}
       expandedFolders={expandedFolders}
       onExpandedFoldersChange={onExpandedFoldersChange}
+      onExpandFolder={onExpandFolder}
+      searchVault={searchVault}
+      searchQuery={searchQuery}
+      onSearchQueryChange={onSearchQueryChange}
     />
   );
 }
@@ -1275,15 +1595,21 @@ export function WorkspaceRightSidebar({
   activeDocument,
   documents,
   onOpenDocument,
-  onPropertyChange,
-  onAddProperty,
+  loadReferences,
+  loadFacets,
+  onSearchTag,
+  onNavigateHeading,
+  onOpenReference,
 }: {
   pane: RightPane;
   activeDocument: DemoDocument | null;
   documents: DemoDocument[];
   onOpenDocument: (title: string) => void;
-  onPropertyChange: (key: string, value: string) => void;
-  onAddProperty: () => void;
+  loadReferences?: (path: string) => Promise<DocumentReferences>;
+  loadFacets?: () => Promise<VaultFacets>;
+  onSearchTag?: (tag: string) => void;
+  onNavigateHeading?: (heading: string, line: number) => void;
+  onOpenReference?: (path: string, line: number) => void;
 }) {
   return (
     <RightSidebar
@@ -1291,8 +1617,11 @@ export function WorkspaceRightSidebar({
       activeDocument={activeDocument}
       documents={documents}
       onOpenDocument={onOpenDocument}
-      onPropertyChange={onPropertyChange}
-      onAddProperty={onAddProperty}
+      loadReferences={loadReferences}
+      loadFacets={loadFacets}
+      onSearchTag={onSearchTag}
+      onNavigateHeading={onNavigateHeading}
+      onOpenReference={onOpenReference}
     />
   );
 }
@@ -1300,9 +1629,11 @@ export function WorkspaceRightSidebar({
 export function WorkspaceRibbon({
   onGraph,
   onFiles,
+  onPlugins,
 }: {
   onGraph: () => void;
   onFiles: () => void;
+  onPlugins: () => void;
 }) {
   return (
     <nav aria-label="Workspace tools" className="flex h-full flex-col items-center gap-0.5 py-1.5">
@@ -1320,6 +1651,9 @@ export function WorkspaceRibbon({
       </IconButton>
       <IconButton label="Source Control">
         <GitBranch className="size-4" />
+      </IconButton>
+      <IconButton label="Plugins" onClick={onPlugins}>
+        <Puzzle className="size-4" />
       </IconButton>
     </nav>
   );

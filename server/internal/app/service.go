@@ -3,6 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path"
 	"time"
 
 	"github.com/flux-pkm/server/internal/domain"
@@ -11,6 +14,13 @@ import (
 )
 
 const Version = "0.0.1"
+
+var ErrInvalidVaultPlan = errors.New("invalid vault plan")
+
+const (
+	maxVaultPlanOperations = 100
+	maxVaultPlanBytes      = 10 << 20
+)
 
 type Service struct {
 	vaults *vault.Manager
@@ -44,6 +54,18 @@ func (s *Service) OpenVault(path string) (domain.VaultInfo, error) {
 	if err != nil {
 		return domain.VaultInfo{}, err
 	}
+	if err := context.Mutate(func() error { return recoverVaultPlans(context) }); err != nil {
+		s.vaults.Degrade(context.VaultInfo().ID)
+		return domain.VaultInfo{}, fmt.Errorf("recover interrupted vault plan: %w", err)
+	}
+	return context.VaultInfo(), nil
+}
+
+func (s *Service) VaultInfo(vaultID string) (domain.VaultInfo, error) {
+	context, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return domain.VaultInfo{}, err
+	}
 	return context.VaultInfo(), nil
 }
 
@@ -63,6 +85,17 @@ func (s *Service) ListFiles(vaultID string) ([]domain.FileEntry, error) {
 	return context.ListFiles()
 }
 
+func (s *Service) ListFileChildren(vaultID, parent, cursor string, limit int) ([]domain.FileEntry, string, error) {
+	context, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return nil, "", err
+	}
+	if context.Index == nil {
+		return nil, "", errors.New("vault index is unavailable")
+	}
+	return context.Index.ListChildren(parent, cursor, limit)
+}
+
 func (s *Service) Graph(vaultID string) (domain.VaultGraph, error) {
 	context, err := s.vaults.Get(vaultID)
 	if err != nil {
@@ -72,6 +105,50 @@ func (s *Service) Graph(vaultID string) (domain.VaultGraph, error) {
 		return domain.VaultGraph{Nodes: []domain.GraphNode{}, Edges: []domain.GraphEdge{}}, nil
 	}
 	return context.Index.Graph()
+}
+
+func (s *Service) Search(vaultID, query string, limit int) ([]domain.SearchResult, error) {
+	context, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return nil, err
+	}
+	if context.Index == nil {
+		return nil, errors.New("vault index is unavailable")
+	}
+	return context.Index.Search(query, limit)
+}
+
+func (s *Service) SearchPage(vaultID, query string, limit, offset int, caseSensitive bool) ([]domain.SearchResult, error) {
+	context, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return nil, err
+	}
+	if context.Index == nil {
+		return nil, errors.New("vault index is unavailable")
+	}
+	return context.Index.SearchPageCase(query, limit, offset, caseSensitive)
+}
+
+func (s *Service) DocumentReferences(vaultID, path string) (domain.DocumentReferences, error) {
+	context, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return domain.DocumentReferences{}, err
+	}
+	if context.Index == nil {
+		return domain.DocumentReferences{}, errors.New("vault index is unavailable")
+	}
+	return context.Index.References(path)
+}
+
+func (s *Service) VaultFacets(vaultID string) (domain.VaultFacets, error) {
+	context, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return domain.VaultFacets{}, err
+	}
+	if context.Index == nil {
+		return domain.VaultFacets{}, errors.New("vault index is unavailable")
+	}
+	return context.Index.Facets()
 }
 
 func (s *Service) FileMetadata(vaultID, path string) (domain.FileEntry, error) {
@@ -135,11 +212,13 @@ func (s *Service) CreateDirectory(vaultID, path string) (domain.FileEntry, error
 	if err != nil {
 		return domain.FileEntry{}, err
 	}
-	entry, err := context.Files.CreateDirectory(path)
-	if err == nil {
-		s.upsert(context, vaultID, entry)
-	}
-	return entry, err
+	return mutate(context, func() (domain.FileEntry, error) {
+		entry, err := context.Files.CreateDirectory(path)
+		if err == nil {
+			s.upsert(context, vaultID, entry)
+		}
+		return entry, err
+	})
 }
 
 func (s *Service) CreateFile(vaultID, path, content string) (domain.FileDocument, error) {
@@ -147,11 +226,13 @@ func (s *Service) CreateFile(vaultID, path, content string) (domain.FileDocument
 	if err != nil {
 		return domain.FileDocument{}, err
 	}
-	document, entry, err := context.Files.Create(path, content)
-	if err == nil {
-		s.upsert(context, vaultID, entry)
-	}
-	return document, err
+	return mutate(context, func() (domain.FileDocument, error) {
+		document, entry, err := context.Files.Create(path, content)
+		if err == nil {
+			s.upsert(context, vaultID, entry)
+		}
+		return document, err
+	})
 }
 
 func (s *Service) SaveFile(vaultID, path, content, expectedHash string) (domain.SaveResult, error) {
@@ -159,12 +240,146 @@ func (s *Service) SaveFile(vaultID, path, content, expectedHash string) (domain.
 	if err != nil {
 		return domain.SaveResult{}, err
 	}
-	result, entry, err := context.Files.Save(path, content, expectedHash)
+	return mutate(context, func() (domain.SaveResult, error) {
+		result, entry, err := context.Files.Save(path, content, expectedHash)
+		if err != nil {
+			return domain.SaveResult{}, err
+		}
+		s.upsert(context, vaultID, entry)
+		return result, nil
+	})
+}
+
+func (s *Service) ApplyVaultPlan(vaultID string, operations []domain.VaultPlanOperation) (domain.VaultPlanResult, error) {
+	context, err := s.vaults.Get(vaultID)
 	if err != nil {
-		return domain.SaveResult{}, err
+		return domain.VaultPlanResult{}, err
 	}
-	s.upsert(context, vaultID, entry)
-	return result, nil
+	return mutate(context, func() (domain.VaultPlanResult, error) {
+		if err := recoverVaultPlans(context); err != nil {
+			s.vaults.Degrade(vaultID)
+			return domain.VaultPlanResult{}, fmt.Errorf("recover interrupted vault plan: %w", err)
+		}
+		prepared, err := preflightVaultPlan(context, operations)
+		if err != nil {
+			return domain.VaultPlanResult{}, err
+		}
+		journal := newVaultPlanJournal(prepared)
+		journalPath, err := writeJournal(context.RootPath(), journal)
+		if err != nil {
+			return domain.VaultPlanResult{}, fmt.Errorf("prepare vault plan recovery: %w", err)
+		}
+		applied := make([]appliedVaultPlanOperation, 0, len(prepared))
+		results := make([]domain.SaveResult, 0, len(prepared))
+		for _, operation := range prepared {
+			var entry domain.FileEntry
+			var result domain.SaveResult
+			if operation.operation.Action == "create" {
+				document, createdEntry, createErr := context.Files.Create(operation.path, operation.operation.Content)
+				entry = createdEntry
+				result = domain.SaveResult{Path: document.Path, ContentHash: document.ContentHash, ModifiedAt: document.ModifiedAt}
+				err = createErr
+			} else {
+				result, entry, err = context.Files.Save(operation.path, operation.operation.Content, operation.operation.ExpectedHash)
+			}
+			if err != nil {
+				if rollbackErr := rollbackJournal(context, journal); rollbackErr != nil {
+					s.vaults.Degrade(vaultID)
+					return domain.VaultPlanResult{}, fmt.Errorf("apply vault plan: %w; rollback failed: %v", err, rollbackErr)
+				}
+				_ = removeJournal(journalPath)
+				return domain.VaultPlanResult{}, err
+			}
+			applied = append(applied, appliedVaultPlanOperation{entry: entry})
+			results = append(results, result)
+		}
+		if err := commitJournal(journalPath, journal); err != nil {
+			if rollbackErr := rollbackJournal(context, journal); rollbackErr != nil {
+				s.vaults.Degrade(vaultID)
+				return domain.VaultPlanResult{}, fmt.Errorf("commit vault plan: %w; rollback failed: %v", err, rollbackErr)
+			}
+			_ = removeJournal(journalPath)
+			return domain.VaultPlanResult{}, fmt.Errorf("commit vault plan: %w", err)
+		}
+		if err := removeJournal(journalPath); err != nil {
+			s.vaults.Degrade(vaultID)
+			return domain.VaultPlanResult{}, fmt.Errorf("finish vault plan: %w", err)
+		}
+		for _, operation := range applied {
+			s.upsert(context, vaultID, operation.entry)
+		}
+		return domain.VaultPlanResult{Files: results}, nil
+	})
+}
+
+type preparedVaultPlanOperation struct {
+	operation domain.VaultPlanOperation
+	path      string
+	original  *domain.FileDocument
+}
+
+type appliedVaultPlanOperation struct {
+	entry domain.FileEntry
+}
+
+func preflightVaultPlan(context *vault.Context, operations []domain.VaultPlanOperation) ([]preparedVaultPlanOperation, error) {
+	if len(operations) == 0 || len(operations) > maxVaultPlanOperations {
+		return nil, fmt.Errorf("%w: operations must contain 1..%d items", ErrInvalidVaultPlan, maxVaultPlanOperations)
+	}
+	prepared := make([]preparedVaultPlanOperation, 0, len(operations))
+	seen := make(map[string]bool, len(operations))
+	totalBytes := 0
+	for _, operation := range operations {
+		totalBytes += len([]byte(operation.Content))
+		if totalBytes > maxVaultPlanBytes {
+			return nil, fmt.Errorf("%w: content exceeds 10 MiB", ErrInvalidVaultPlan)
+		}
+		normalized, err := files.NormalizePath(operation.Path)
+		if err != nil {
+			return nil, err
+		}
+		if seen[normalized] {
+			return nil, fmt.Errorf("%w: duplicate path %q", ErrInvalidVaultPlan, normalized)
+		}
+		seen[normalized] = true
+		item := preparedVaultPlanOperation{operation: operation, path: normalized}
+		switch operation.Action {
+		case "create":
+			if operation.ExpectedHash != "" {
+				return nil, fmt.Errorf("%w: create %q must not have expectedHash", ErrInvalidVaultPlan, normalized)
+			}
+			if _, err := context.Files.Metadata(normalized); err == nil {
+				return nil, os.ErrExist
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return nil, err
+			}
+			if parent := path.Dir(normalized); parent != "." {
+				metadata, err := context.Files.Metadata(parent)
+				if err != nil {
+					return nil, err
+				}
+				if metadata.Kind != domain.FileKindDirectory {
+					return nil, fmt.Errorf("%w: parent of %q is not a directory", ErrInvalidVaultPlan, normalized)
+				}
+			}
+		case "update":
+			if operation.ExpectedHash == "" {
+				return nil, fmt.Errorf("%w: update %q requires expectedHash", ErrInvalidVaultPlan, normalized)
+			}
+			document, err := context.Files.Read(normalized)
+			if err != nil {
+				return nil, err
+			}
+			if document.ContentHash != operation.ExpectedHash {
+				return nil, files.ErrConflict
+			}
+			item.original = &document
+		default:
+			return nil, fmt.Errorf("%w: action must be create or update", ErrInvalidVaultPlan)
+		}
+		prepared = append(prepared, item)
+	}
+	return prepared, nil
 }
 
 func (s *Service) PatchFile(vaultID, path, expectedHash string, edits []domain.TextEdit) (domain.SaveResult, error) {
@@ -172,11 +387,13 @@ func (s *Service) PatchFile(vaultID, path, expectedHash string, edits []domain.T
 	if err != nil {
 		return domain.SaveResult{}, err
 	}
-	result, entry, err := context.Files.Patch(path, expectedHash, edits)
-	if err == nil {
-		s.upsert(context, vaultID, entry)
-	}
-	return result, err
+	return mutate(context, func() (domain.SaveResult, error) {
+		result, entry, err := context.Files.Patch(path, expectedHash, edits)
+		if err == nil {
+			s.upsert(context, vaultID, entry)
+		}
+		return result, err
+	})
 }
 
 func (s *Service) MoveFile(vaultID, sourcePath, destinationPath string) (domain.FileEntry, error) {
@@ -184,16 +401,24 @@ func (s *Service) MoveFile(vaultID, sourcePath, destinationPath string) (domain.
 	if err != nil {
 		return domain.FileEntry{}, err
 	}
-	entry, err := context.Files.Move(sourcePath, destinationPath)
-	if errors.Is(err, files.ErrLinkRewrite) {
-		s.vaults.Degrade(vaultID)
-		s.moveIndex(context, vaultID, sourcePath, entry)
-		return entry, nil
+	return mutate(context, func() (domain.FileEntry, error) {
+		return s.moveFile(context, vaultID, sourcePath, destinationPath)
+	})
+}
+
+// MoveFileExpected checks and moves under one vault mutation lock. This keeps
+// external agents from moving content changed after they read it.
+func (s *Service) MoveFileExpected(vaultID, sourcePath, destinationPath, expectedHash string) (domain.FileEntry, error) {
+	context, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return domain.FileEntry{}, err
 	}
-	if err == nil {
-		s.moveIndex(context, vaultID, sourcePath, entry)
-	}
-	return entry, err
+	return mutate(context, func() (domain.FileEntry, error) {
+		if err := expectHash(context, sourcePath, expectedHash); err != nil {
+			return domain.FileEntry{}, err
+		}
+		return s.moveFile(context, vaultID, sourcePath, destinationPath)
+	})
 }
 
 func (s *Service) DeleteFile(vaultID, path string) (domain.TrashEntry, error) {
@@ -201,11 +426,23 @@ func (s *Service) DeleteFile(vaultID, path string) (domain.TrashEntry, error) {
 	if err != nil {
 		return domain.TrashEntry{}, err
 	}
-	entry, err := context.Files.Delete(path)
-	if err == nil {
-		context.QueueDelete(path)
+	return mutate(context, func() (domain.TrashEntry, error) {
+		return s.deleteFile(context, path)
+	})
+}
+
+// DeleteFileExpected checks and trashes under one vault mutation lock.
+func (s *Service) DeleteFileExpected(vaultID, path, expectedHash string) (domain.TrashEntry, error) {
+	context, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return domain.TrashEntry{}, err
 	}
-	return entry, err
+	return mutate(context, func() (domain.TrashEntry, error) {
+		if err := expectHash(context, path, expectedHash); err != nil {
+			return domain.TrashEntry{}, err
+		}
+		return s.deleteFile(context, path)
+	})
 }
 
 func (s *Service) RestoreFile(vaultID, trashID string) (domain.FileEntry, error) {
@@ -213,11 +450,13 @@ func (s *Service) RestoreFile(vaultID, trashID string) (domain.FileEntry, error)
 	if err != nil {
 		return domain.FileEntry{}, err
 	}
-	entry, err := context.Files.Restore(trashID)
-	if err == nil {
-		s.upsert(context, vaultID, entry)
-	}
-	return entry, err
+	return mutate(context, func() (domain.FileEntry, error) {
+		entry, err := context.Files.Restore(trashID)
+		if err == nil {
+			s.upsert(context, vaultID, entry)
+		}
+		return entry, err
+	})
 }
 
 func (s *Service) ListTrash(vaultID string) ([]domain.TrashEntry, error) {
@@ -233,7 +472,7 @@ func (s *Service) PermanentlyDelete(vaultID, trashID string) error {
 	if err != nil {
 		return err
 	}
-	return context.Files.PermanentlyDelete(trashID)
+	return context.Mutate(func() error { return context.Files.PermanentlyDelete(trashID) })
 }
 
 func (s *Service) PurgeTrash(vaultID string, retentionDays int) (domain.PurgeResult, error) {
@@ -244,8 +483,55 @@ func (s *Service) PurgeTrash(vaultID string, retentionDays int) (domain.PurgeRes
 	if err != nil {
 		return domain.PurgeResult{}, err
 	}
-	deleted, err := context.Files.PurgeTrash(time.Duration(retentionDays)*24*time.Hour, time.Now().UTC())
+	deleted, err := mutate(context, func() (int, error) {
+		return context.Files.PurgeTrash(time.Duration(retentionDays)*24*time.Hour, time.Now().UTC())
+	})
 	return domain.PurgeResult{Deleted: deleted}, err
+}
+
+func (s *Service) moveFile(context *vault.Context, vaultID, sourcePath, destinationPath string) (domain.FileEntry, error) {
+	entry, err := context.Files.Move(sourcePath, destinationPath)
+	if errors.Is(err, files.ErrLinkRewrite) {
+		s.vaults.Degrade(vaultID)
+		s.moveIndex(context, vaultID, sourcePath, entry)
+		return entry, nil
+	}
+	if err == nil {
+		s.moveIndex(context, vaultID, sourcePath, entry)
+	}
+	return entry, err
+}
+
+func (s *Service) deleteFile(context *vault.Context, path string) (domain.TrashEntry, error) {
+	entry, err := context.Files.Delete(path)
+	if err == nil {
+		context.QueueDelete(path)
+	}
+	return entry, err
+}
+
+func expectHash(context *vault.Context, path, expectedHash string) error {
+	if expectedHash == "" {
+		return files.ErrConflict
+	}
+	document, err := context.Files.Read(path)
+	if err != nil {
+		return err
+	}
+	if document.ContentHash != expectedHash {
+		return files.ErrConflict
+	}
+	return nil
+}
+
+func mutate[T any](context *vault.Context, operation func() (T, error)) (T, error) {
+	var result T
+	err := context.Mutate(func() error {
+		var operationErr error
+		result, operationErr = operation()
+		return operationErr
+	})
+	return result, err
 }
 
 func (s *Service) upsert(context *vault.Context, vaultID string, entry domain.FileEntry) {

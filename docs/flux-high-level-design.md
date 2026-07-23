@@ -1215,6 +1215,12 @@ A trusted marketplace registry contains:
 - Optional permissions.
 - Changelog.
 
+Registry is a separate metadata repository. Plugin source and release artifacts stay in
+publisher repositories. Generated `registry.json` snapshots bounded publisher README
+content and release metadata; detached Ed25519 signature covers exact index bytes.
+Flux verifies registry signature, package checksum, and packaged manifest before staging.
+Landing page reads same public index. See `docs/plugin-marketplace.md`.
+
 Plugins are installed globally once:
 
 ```text
@@ -1339,6 +1345,19 @@ Continuous background execution requires `background.run`, intervals, quotas, an
 - Show retained size.
 - Offer “delete all state now.”
 - Periodically prune orphaned state.
+
+### 21.7 Plugin Settings
+
+Manifest-declared settings render through shared desktop/web UI. Values are validated by
+declared type and stored per vault at:
+
+```text
+.flux/plugins/<plugin-id>/state/settings.json
+```
+
+Plugin runtime receives an immutable settings snapshot at activation. Saving settings
+restarts that vault's isolated plugin runtime so new values apply without granting direct
+filesystem access.
 
 ---
 
@@ -2199,6 +2218,14 @@ flux.apply_vault_plan
 ```
 
 `flux.apply_vault_plan` validates the entire operation set before applying it through normal path validation, locking, atomic writes, conflict handling, indexing, and event emission.
+
+Before its first canonical write, it persists a private write-ahead journal under
+`.flux/recovery/vault-plans/`. Journal contains normalized paths, original content hashes
+and content required for rollback, plus target hashes. A committed marker is flushed only
+after every file write succeeds. On next vault open, an uncommitted plan rolls back only
+files still matching recorded target hashes; unexpected external changes stop recovery and
+degrade vault instead of overwriting user data. Committed journals are cleaned without
+rollback.
 
 ### 37.5 Tutor Mode Workflow
 

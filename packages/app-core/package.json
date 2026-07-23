@@ -21,6 +21,8 @@
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
     "@flux/bridge-contract": "workspace:*",
+    "@flux/plugin-runtime": "workspace:*",
+    "@flux/plugin-sdk": "workspace:*",
     "@flux/shared-ui": "workspace:*",
     "@lezer/markdown": "^1.7.2",
     "@mdit/plugin-katex": "^1.0.1",

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDevelopmentManagerOpensAndSwitchesRequestedVaults(t *testing.T) {
@@ -24,10 +25,78 @@ func TestDevelopmentManagerOpensAndSwitchesRequestedVaults(t *testing.T) {
 	if first.VaultInfo().ID == second.VaultInfo().ID {
 		t.Fatal("switch kept previous vault identity")
 	}
+	if _, err := manager.Get(first.VaultInfo().ID); err != nil {
+		t.Fatalf("first vault was closed after opening second: %v", err)
+	}
 	for _, root := range []string{firstRoot, secondRoot} {
 		if _, err := os.Stat(filepath.Join(root, ".flux", "vault.json")); err != nil {
 			t.Fatalf("vault was not initialized at %s: %v", root, err)
 		}
+	}
+}
+
+func TestVaultLeaseRejectsSecondRuntime(t *testing.T) {
+	root := t.TempDir()
+	first := NewManager("", true)
+	second := NewManager("", true)
+	t.Cleanup(func() { _ = first.Close() })
+	t.Cleanup(func() { _ = second.Close() })
+	if _, err := first.Open(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Open(root); !errors.Is(err, ErrVaultInUse) {
+		t.Fatalf("expected ErrVaultInUse, got %v", err)
+	}
+}
+
+func TestDuplicateIdentityDoesNotReplaceOpenContext(t *testing.T) {
+	firstRoot := t.TempDir()
+	secondRoot := t.TempDir()
+	manager := NewManager("", true)
+	t.Cleanup(func() { _ = manager.Close() })
+	first, err := manager.Open(firstRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := os.ReadFile(filepath.Join(firstRoot, ".flux", "vault.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(secondRoot, ".flux"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secondRoot, ".flux", "vault.json"), identity, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Open(secondRoot); !errors.Is(err, ErrDuplicateID) {
+		t.Fatalf("expected ErrDuplicateID, got %v", err)
+	}
+	kept, err := manager.Get(first.VaultInfo().ID)
+	if err != nil || !samePath(kept.root, firstRoot) {
+		t.Fatalf("original context was replaced: %v", err)
+	}
+}
+
+func TestIdleContextIsEvicted(t *testing.T) {
+	manager := NewManager("", true)
+	t.Cleanup(func() { _ = manager.Close() })
+	old, err := manager.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := manager.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.lastUsed.Store(time.Now().Add(-vaultIdleTTL - time.Minute).UnixNano())
+	if _, err := manager.Get(current.VaultInfo().ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Open(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Get(old.VaultInfo().ID); !errors.Is(err, ErrNotOpen) {
+		t.Fatalf("expected idle context eviction, got %v", err)
 	}
 }
 

@@ -53,6 +53,9 @@ type Store struct {
 	writer sync.Mutex
 }
 
+// Database lets feature tables share the one global app-data connection.
+func (s *Store) Database() *gorm.DB { return s.db }
+
 func Open(databasePath string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(databasePath), 0o700); err != nil {
 		return nil, err
