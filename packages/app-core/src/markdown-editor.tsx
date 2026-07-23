@@ -813,7 +813,7 @@ export function MarkdownEditor({
   showBacklinks: boolean;
   findRequest: number;
   onDropDocument?: (title: string) => void;
-  onOpenDocument?: (title: string) => void;
+  onOpenDocument?: (identifier: string, inPlace?: boolean) => void;
   documents?: DemoDocument[];
 }) {
   const { frontmatter, body } = splitFrontmatter(document.content);
@@ -943,9 +943,9 @@ export function MarkdownEditor({
     const resolve = resolverFor(documents);
     const resolvedPath = resolve(target, document);
     if (resolvedPath) {
-      onOpenDocument?.(resolvedPath);
+      onOpenDocument?.(resolvedPath, true);
     } else {
-      onOpenDocument?.(target);
+      onOpenDocument?.(target, true);
     }
   };
 

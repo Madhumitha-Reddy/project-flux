@@ -1868,6 +1868,20 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
           tab.title
         )
       }
+      canGoBack={tab.history && tab.historyIndex > 0}
+      canGoForward={tab.history && tab.historyIndex < tab.history.length - 1}
+      onGoBack={() => {
+        if (!tab.history || tab.historyIndex <= 0) return;
+        const newIndex = tab.historyIndex - 1;
+        updateTab(tab.id, (current) => ({ ...current, historyIndex: newIndex }));
+        void openDocument(tab.history[newIndex], true, true);
+      }}
+      onGoForward={() => {
+        if (!tab.history || tab.historyIndex >= tab.history.length - 1) return;
+        const newIndex = tab.historyIndex + 1;
+        updateTab(tab.id, (current) => ({ ...current, historyIndex: newIndex }));
+        void openDocument(tab.history[newIndex], true, true);
+      }}
       headerAction={
         tab.document ? (
           <div className="flex items-center gap-0.5">
@@ -2000,7 +2014,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       )?.size ?? 0)
     : 0;
 
-  const openDocument = async (identifier: string) => {
+  const openDocument = async (identifier: string, inPlace = false, historyNavigation = false) => {
     const exactEntry = vault ? fileEntries.find((entry) => entry.path === identifier) : undefined;
     const titleMatches = vault
       ? fileEntries.filter(
@@ -2013,13 +2027,15 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
         vaultDocuments.find((document) => document.title === identifier)?.path ??
         (/\.(md|markdown)$/i.test(identifier) ? identifier : undefined))
       : undefined;
-    const existing = tabs.find((tab) =>
-      requestedPath
-        ? tab.document?.path === requestedPath ||
-          tab.pdf?.path === requestedPath ||
-          tab.preview?.path === requestedPath
-        : tab.document?.title === identifier
-    );
+    const existing = !inPlace
+      ? tabs.find((tab) =>
+          requestedPath
+            ? tab.document?.path === requestedPath ||
+              tab.pdf?.path === requestedPath ||
+              tab.preview?.path === requestedPath
+            : tab.document?.title === identifier
+        )
+      : undefined;
     if (existing) {
       setActiveTabId(existing.id);
       setWorkspaceRoot((root) =>
@@ -2034,6 +2050,41 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     }
 
     const placeTab = (create: (id: number) => WorkspaceTab) => {
+      if (inPlace) {
+        setTabs((current) =>
+          current.map((tab) => {
+            if (tab.id === activeTabId) {
+              const replacement = create(activeTabId);
+              let newHistory = tab.history || [];
+              let newIndex = tab.historyIndex ?? -1;
+              if (!historyNavigation) {
+                newHistory = newHistory.slice(0, newIndex + 1);
+                const newPath =
+                  replacement.document?.path ??
+                  replacement.pdf?.path ??
+                  replacement.preview?.path ??
+                  replacement.title;
+                if (newHistory[newHistory.length - 1] !== newPath) {
+                  newHistory.push(newPath);
+                }
+                newIndex = newHistory.length - 1;
+              }
+              return {
+                ...tab,
+                title: replacement.title,
+                document: replacement.document,
+                pdf: replacement.pdf,
+                preview: replacement.preview,
+                history: historyNavigation ? replacement.history : newHistory,
+                historyIndex: historyNavigation ? replacement.historyIndex : newIndex,
+              };
+            }
+            return tab;
+          })
+        );
+        return;
+      }
+
       const leaf = findWorkspaceLeaf(workspaceRoot, activeLeafId);
       const emptyTab =
         leaf?.tabIds.length === 1
