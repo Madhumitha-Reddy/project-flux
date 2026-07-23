@@ -71,18 +71,11 @@ export function resolverFor(documents: Pick<DemoDocument, "path" | "title">[]) {
   }
   return (rawTarget: string, source?: DemoDocument) => {
     if (/^[a-z][a-z\d+.-]*:/i.test(rawTarget)) return undefined;
+    const isAbsolute = rawTarget.startsWith("/");
     const target = normalizeTarget(rawTarget).toLocaleLowerCase();
 
-    // 1. Check exact document path match
-    for (const document of documents) {
-      const docPath = normalizeTarget(document.path ?? "").toLocaleLowerCase();
-      if (docPath && docPath === target) {
-        return documentId(document);
-      }
-    }
-
-    // 2. Check relative path match from source directory
-    if (source?.path) {
+    // 1. Check relative path match from source directory (if not absolute)
+    if (!isAbsolute && source?.path) {
       const directory = normalizeTarget(source.path).split("/").slice(0, -1).join("/");
       const relative = normalizeTarget(`${directory}/${target}`).toLocaleLowerCase();
       for (const document of documents) {
@@ -90,6 +83,14 @@ export function resolverFor(documents: Pick<DemoDocument, "path" | "title">[]) {
         if (docPath && docPath === relative) {
           return documentId(document);
         }
+      }
+    }
+
+    // 2. Check exact document path match
+    for (const document of documents) {
+      const docPath = normalizeTarget(document.path ?? "").toLocaleLowerCase();
+      if (docPath && docPath === target) {
+        return documentId(document);
       }
     }
 
@@ -261,9 +262,12 @@ export class BacklinkIndexStore {
 
   public getLinkedMentions(targetIdentifier: string): DocumentMention[] {
     const allDocs = [...this.fileMap.values()];
+    const resolve = resolverFor(allDocs);
+    
     const targetDoc = allDocs.find(
       (d) => documentId(d) === targetIdentifier || d.path === targetIdentifier || d.title === targetIdentifier
     );
+    const wantedId = targetDoc ? documentId(targetDoc) : targetIdentifier;
 
     const wantedSet = new Set<string>();
     wantedSet.add(normalizeTarget(targetIdentifier).toLocaleLowerCase());
@@ -282,9 +286,15 @@ export class BacklinkIndexStore {
       if (sourceGroup) {
         for (const [sourceId, mentions] of sourceGroup.entries()) {
           // Exclude self-references
-          if (targetDoc && documentId(targetDoc) === sourceId) continue;
+          if (wantedId === sourceId) continue;
+          
+          const sourceDoc = this.fileMap.get(sourceId);
           
           for (const m of mentions) {
+            // Verify that this mention ACTUALLY resolves to our wanted target!
+            const resolvedTarget = resolve(m.target, sourceDoc);
+            if (resolvedTarget !== wantedId) continue;
+
             const key = `${m.source}:${m.line}:${m.excerpt}`;
             if (!seen.has(key)) {
               seen.add(key);

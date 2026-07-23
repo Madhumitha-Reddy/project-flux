@@ -40,7 +40,7 @@ import {
   type DemoDocument,
 } from "./markdown-editor";
 import { setFrontmatterProperty } from "./frontmatter";
-import { buildLinkIndex, isIgnoredPath, globalBacklinkStore } from "./link-index";
+import { isIgnoredPath, globalBacklinkStore } from "./link-index";
 import {
   WorkspaceLeftSidebar,
   WorkspaceRibbon,
@@ -2008,11 +2008,28 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     </FluxEditorPane>
   );
 
-  const backlinksCount = visibleActiveTab?.document
-    ? (buildLinkIndex(documents).backlinks.get(
-        visibleActiveTab.document.path ?? visibleActiveTab.document.title
-      )?.size ?? 0)
-    : 0;
+  const [backlinksCount, setBacklinksCount] = useState(0);
+
+  useEffect(() => {
+    const updateCount = () => {
+      if (visibleActiveTab?.document) {
+        const identifier = visibleActiveTab.document.path ?? visibleActiveTab.document.title;
+        const mentions = globalBacklinkStore.getLinkedMentions(identifier);
+        
+        // Deduplicate by source document to count unique backlinking files, not total mentions
+        const uniqueSources = new Set(mentions.map((m) => m.source));
+        setBacklinksCount(uniqueSources.size);
+      } else {
+        setBacklinksCount(0);
+      }
+    };
+    
+    updateCount();
+    const unsubscribe = globalBacklinkStore.subscribe(updateCount);
+    return () => {
+      unsubscribe();
+    };
+  }, [visibleActiveTab?.document]);
 
   const openDocument = async (identifier: string, targetTabId?: number, historyNavigation = false) => {
     const exactEntry = vault ? fileEntries.find((entry) => entry.path === identifier) : undefined;
