@@ -919,6 +919,38 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     }
     setVaultDocuments(resolved);
     globalBacklinkStore.rebuild(resolved);
+    
+    // Background incremental indexing for ignored directories (e.g., node_modules)
+    // Ensures instant startup while building full-vault backlinks without blocking UI
+    const backgroundEntries = entries.filter(
+      (entry) => (entry.kind === "markdown" || entry.kind === "text") && isIgnoredPath(entry.path)
+    );
+    setTimeout(async () => {
+      let index = 0;
+      const CHUNK = 50;
+      while (index < backgroundEntries.length) {
+        const chunk = backgroundEntries.slice(index, index + CHUNK);
+        const chunkLoaded = await Promise.all(
+          chunk.map(async (entry) => {
+            try {
+              const file = await runtime.client!.readFile(vaultId, entry.path);
+              return {
+                title: titleFromPath(file.path),
+                path: file.path,
+                content: file.content,
+                contentHash: file.contentHash,
+              } satisfies DemoDocument;
+            } catch { return null; }
+          })
+        );
+        for (const doc of chunkLoaded) {
+          if (doc) globalBacklinkStore.updateSingleDocument(doc);
+        }
+        index += CHUNK;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }, 1000);
+
     return resolved;
   };
 

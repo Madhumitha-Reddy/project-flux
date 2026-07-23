@@ -183,6 +183,22 @@ export class BacklinkIndexStore {
   private fileMap = new Map<string, DemoDocument>();
   private reverseLinked = new Map<string, Map<string, DocumentMention[]>>();
   private cacheVersion = 0;
+  private listeners = new Set<() => void>();
+
+  public subscribe(listener: () => void) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private notify() {
+    for (const listener of this.listeners) {
+      listener();
+    }
+  }
+
+  public getCacheVersion() {
+    return this.cacheVersion;
+  }
 
   public rebuild(documents: DemoDocument[]) {
     this.fileMap.clear();
@@ -215,9 +231,10 @@ export class BacklinkIndexStore {
       }
     }
     this.cacheVersion += 1;
+    this.notify();
   }
 
-  public updateSingleDocument(doc: DemoDocument, allDocs: DemoDocument[]) {
+  public updateSingleDocument(doc: DemoDocument) {
     const id = documentId(doc);
     this.fileMap.set(id, doc);
 
@@ -226,6 +243,7 @@ export class BacklinkIndexStore {
       sourceGroup.delete(id);
     }
 
+    const allDocs = [...this.fileMap.values()];
     const resolve = resolverFor(allDocs);
     for (const link of rawLinks(doc.content)) {
       const resolved = resolve(link.target, doc);
@@ -248,11 +266,13 @@ export class BacklinkIndexStore {
       }
     }
     this.cacheVersion += 1;
+    this.notify();
   }
 
-  public getLinkedMentions(documents: DemoDocument[], targetIdentifier: string): DocumentMention[] {
-    const wantedId = targetId(documents, targetIdentifier);
-    const targetDoc = documents.find(
+  public getLinkedMentions(targetIdentifier: string): DocumentMention[] {
+    const allDocs = [...this.fileMap.values()];
+    const wantedId = targetId(allDocs, targetIdentifier);
+    const targetDoc = allDocs.find(
       (d) => documentId(d) === wantedId || d.path === targetIdentifier || d.title === targetIdentifier
     );
 
@@ -281,6 +301,11 @@ export class BacklinkIndexStore {
       }
     }
     return results;
+  }
+
+  public getUnlinkedMentions(targetIdentifier: string): DocumentMention[] {
+    const allDocs = [...this.fileMap.values()];
+    return unlinkedMentionsFor(allDocs, targetIdentifier);
   }
 }
 

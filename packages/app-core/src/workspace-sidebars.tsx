@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -38,7 +38,6 @@ import { getFrontmatterProperties, splitFrontmatter } from "./frontmatter";
 import type { DemoDocument } from "./markdown-editor";
 import {
   buildLinkIndex,
-  unlinkedMentionsFor,
   globalBacklinkStore,
   type DocumentMention,
 } from "./link-index";
@@ -987,14 +986,19 @@ function RightContent({
       });
     };
 
-    // decoupled performance: raw backlink indexing only runs when documents/activeTitle/refreshTrigger changes
+    // decoupled performance: raw backlink indexing only runs when activeTitle/refreshTrigger/storeVersion changes
+    const storeVersion = useSyncExternalStore(
+      (onStoreChange) => globalBacklinkStore.subscribe(onStoreChange),
+      () => globalBacklinkStore.getCacheVersion()
+    );
+
     const rawLinkedMentions = useMemo(() => {
-      return globalBacklinkStore.getLinkedMentions(documents, activeTitle);
-    }, [documents, activeTitle, refreshTrigger]);
+      return globalBacklinkStore.getLinkedMentions(activeTitle);
+    }, [activeTitle, refreshTrigger, storeVersion]);
 
     const rawUnlinkedMentions = useMemo(() => {
-      return unlinkedMentionsFor(documents, activeDocument.title);
-    }, [documents, activeDocument.title, refreshTrigger]);
+      return globalBacklinkStore.getUnlinkedMentions(activeDocument.title);
+    }, [activeDocument.title, refreshTrigger, storeVersion]);
 
     // group & search filtering: running instantly in O(N)
     const linked = useMemo(() => {

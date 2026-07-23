@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import {
   Bookmark,
   BookOpen,
@@ -42,7 +42,7 @@ import { livePreview } from "./live-preview";
 import { isMarkdownListLine, listIndentWidth, nestedOrderedMarkerEdit } from "./markdown-list";
 import { obsidianMarkdownExtensions } from "./obsidian-markdown";
 import { showRenderError } from "./render-feedback";
-import { linkedMentionsFor, unlinkedMentionsFor, globalBacklinkStore } from "./link-index";
+import { linkedMentionsFor, globalBacklinkStore } from "./link-index";
 
 const ReadingView = lazy(() => import("./reading-view"));
 
@@ -818,13 +818,18 @@ export function MarkdownEditor({
 }) {
   const { frontmatter, body } = splitFrontmatter(document.content);
   const activeTitle = document.path ?? document.title;
+  const storeVersion = useSyncExternalStore(
+    (onStoreChange) => globalBacklinkStore.subscribe(onStoreChange),
+    () => globalBacklinkStore.getCacheVersion()
+  );
+
   const linkedMentions = useMemo(
-    () => globalBacklinkStore.getLinkedMentions(documents, activeTitle),
-    [documents, activeTitle]
+    () => globalBacklinkStore.getLinkedMentions(activeTitle),
+    [activeTitle, storeVersion]
   );
   const unlinkedMentions = useMemo(
-    () => unlinkedMentionsFor(documents, document.title),
-    [documents, document.title]
+    () => globalBacklinkStore.getUnlinkedMentions(document.title),
+    [document.title, storeVersion]
   );
 
   const groupMentions = (mentions: ReturnType<typeof linkedMentionsFor>) => {
