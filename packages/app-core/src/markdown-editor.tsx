@@ -42,7 +42,7 @@ import { livePreview } from "./live-preview";
 import { isMarkdownListLine, listIndentWidth, nestedOrderedMarkerEdit } from "./markdown-list";
 import { obsidianMarkdownExtensions } from "./obsidian-markdown";
 import { showRenderError } from "./render-feedback";
-import { linkedMentionsFor, globalBacklinkStore } from "./link-index";
+import { linkedMentionsFor, globalBacklinkStore, resolverFor } from "./link-index";
 
 const ReadingView = lazy(() => import("./reading-view"));
 
@@ -939,6 +939,16 @@ export function MarkdownEditor({
     </div>
   );
 
+  const handleNavigate = (target: string) => {
+    const resolve = resolverFor(documents);
+    const resolvedPath = resolve(target, document);
+    if (resolvedPath) {
+      onOpenDocument?.(resolvedPath);
+    } else {
+      onOpenDocument?.(target);
+    }
+  };
+
   return (
     <div
       className="flux-editor-scroll h-full min-h-0 overflow-y-auto overscroll-contain"
@@ -976,7 +986,7 @@ export function MarkdownEditor({
       ) : (
         <ReadingViewBoundary key={`${document.title}:${body}`}>
           <Suspense fallback={<RenderingState />}>
-            <ReadingView value={body} documents={documents} />
+            <ReadingView value={body} documents={documents} onNavigate={handleNavigate} />
           </Suspense>
         </ReadingViewBoundary>
       )}

@@ -30,7 +30,7 @@ function normalizeTarget(value: string) {
     .replace(/^\/+|\/+$/g, "");
 }
 
-function aliasesFor(document: DemoDocument) {
+function aliasesFor(document: Pick<DemoDocument, "path" | "title">) {
   const path = normalizeTarget(document.path ?? "");
   const basename = path.slice(path.lastIndexOf("/") + 1);
   return [document.title, normalizeTarget(document.title), path, basename]
@@ -56,11 +56,11 @@ export function isIgnoredPath(path?: string): boolean {
   return IGNORED_PATH_PATTERNS.some((pattern) => pattern.test(path));
 }
 
-function documentId(document: DemoDocument) {
+function documentId(document: Pick<DemoDocument, "path" | "title">) {
   return document.path ?? document.title;
 }
 
-function resolverFor(documents: DemoDocument[]) {
+export function resolverFor(documents: Pick<DemoDocument, "path" | "title">[]) {
   const candidates = new Map<string, Set<string>>();
   for (const document of documents) {
     for (const alias of aliasesFor(document)) {
