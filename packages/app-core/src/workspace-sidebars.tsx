@@ -1038,13 +1038,13 @@ function RightContent({
       const key = `${activeTitle}::${source}`;
       setExpandedGroups((prev) => ({
         ...prev,
-        [key]: prev[key] === false, // toggle: if undefined (default true), toggle to false; if false, toggle to true (which is true)
+        [key]: !prev[key],
       }));
     };
 
     const renderGroupedMentions = (groups: Array<[string, DocumentMention[]]>) => {
       return groups.map(([source, mentions]) => {
-        const isExpanded = expandedGroups[`${activeTitle}::${source}`] !== false;
+        const isExpanded = expandedGroups[`${activeTitle}::${source}`] === true;
         return (
           <div key={source} className="mb-2.5 space-y-1">
             <div className="flex items-center justify-between py-1 px-1 hover:bg-accent/40 rounded-md group select-none">
