@@ -84,7 +84,7 @@ function resolverFor(documents: DemoDocument[]) {
     const basenameMatches = candidates.get(targetBasename);
     if (basenameMatches?.size === 1) return [...basenameMatches][0];
 
-    // 5. Fallback for duplicates: prioritize root document or exact match before returning undefined
+    // 5. Fallback for duplicates: prioritize root document or exact path match before returning undefined
     if (basenameMatches && basenameMatches.size > 1) {
       const rootMatch = [...basenameMatches].find((id) => {
         const doc = documents.find((d) => documentId(d) === id);
@@ -160,39 +160,61 @@ export function linkedTitles(content: string) {
   return rawLinks(content).map((link) => normalizeTarget(link.target));
 }
 
-export function linkedMentionsFor(documents: DemoDocument[], targetTitle: string) {
+export function linkedMentionsFor(documents: DemoDocument[], targetIdentifier: string) {
   const resolve = resolverFor(documents);
-  const wanted = targetId(documents, targetTitle);
+  const wantedId = targetId(documents, targetIdentifier);
+  const targetDoc = documents.find(
+    (d) => documentId(d) === wantedId || d.path === targetIdentifier || d.title === targetIdentifier
+  );
+
+  const wantedSet = new Set<string>();
+  if (wantedId) wantedSet.add(wantedId);
+  if (targetDoc) {
+    wantedSet.add(documentId(targetDoc));
+    if (targetDoc.path) wantedSet.add(targetDoc.path);
+    if (targetDoc.title) wantedSet.add(targetDoc.title);
+  }
+  wantedSet.add(targetIdentifier);
+
   const mentions: DocumentMention[] = [];
   for (const document of documents) {
     for (const link of rawLinks(document.content)) {
-      const target = resolve(link.target, document);
-      if (target !== wanted) continue;
-      mentions.push({
-        source: documentId(document),
-        target,
-        ...locationFor(document.content, link.index),
-      });
+      const resolved = resolve(link.target, document);
+      if (resolved && (wantedSet.has(resolved) || wantedSet.has(normalizeTarget(resolved)))) {
+        mentions.push({
+          source: documentId(document),
+          target: resolved,
+          ...locationFor(document.content, link.index),
+        });
+      }
     }
   }
   return mentions;
 }
 
-export function unlinkedMentionsFor(documents: DemoDocument[], targetTitle: string) {
+export function unlinkedMentionsFor(documents: DemoDocument[], targetIdentifier: string) {
+  const targetDoc = documents.find(
+    (d) => documentId(d) === targetIdentifier || d.path === targetIdentifier || d.title === targetIdentifier
+  );
+  const targetTitle =
+    targetDoc?.title ?? targetIdentifier.split("/").pop()?.replace(/\.(md|markdown)$/i, "") ?? targetIdentifier;
+
   const mentions: DocumentMention[] = [];
   if (!targetTitle.trim()) return mentions;
   const pattern = new RegExp(
     `(^|[^\\p{L}\\p{N}_])(${escapeRegExp(targetTitle)})(?=$|[^\\p{L}\\p{N}_])`,
     "giu"
   );
+  const wantedId = targetDoc ? documentId(targetDoc) : targetIdentifier;
+
   for (const document of documents) {
-    if (documentId(document) === targetId(documents, targetTitle)) continue;
+    if (documentId(document) === wantedId) continue;
     const searchable = maskMarkdown(document.content);
     for (const match of searchable.matchAll(pattern)) {
       const index = match.index + match[1].length;
       mentions.push({
         source: documentId(document),
-        target: targetId(documents, targetTitle),
+        target: wantedId,
         ...locationFor(document.content, index),
       });
     }

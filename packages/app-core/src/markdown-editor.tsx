@@ -855,19 +855,30 @@ export function MarkdownEditor({
   };
 
   const highlightQuery = (text: string, query: string) => {
-    if (!query.trim()) return <span>{text}</span>;
-    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(`(${escapedQuery})`, "gi");
-    const parts = text.split(regex);
+    if (!text) return null;
+    const cleanTarget = query.split("/").pop()?.replace(/\.(md|markdown)$/i, "") ?? query;
+    const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const targetEsc = escapeRegExp(cleanTarget);
+
+    const linkPattern = new RegExp(
+      `(\\[\\[[^\\]]*${targetEsc}[^\\]]*\\]\\]|\\[[^\\]]+\\]\\([^)]*${targetEsc}[^)]*\\)|${targetEsc})`,
+      "gi"
+    );
+
+    const parts = text.split(linkPattern);
+
     return (
       <span>
         {parts.map((part, idx) =>
-          regex.test(part) ? (
-            <mark key={idx} className="bg-primary/10 text-primary font-semibold px-0.5 rounded-sm">
+          linkPattern.test(part) ? (
+            <mark
+              key={idx}
+              className="inline rounded border border-[#a68a26]/60 bg-[#685512]/40 px-1 py-0.5 font-mono text-[11px] font-medium text-[#ffe57f] shadow-xs"
+            >
               {part}
             </mark>
           ) : (
-            part
+            <span key={idx}>{part}</span>
           )
         )}
       </span>
@@ -875,26 +886,26 @@ export function MarkdownEditor({
   };
 
   const renderGroupList = (groups: Array<[string, ReturnType<typeof linkedMentionsFor>]>) => (
-    <div className="space-y-2">
+    <div className="space-y-3">
       {groups.map(([source, mentions]) => {
         const isExpanded = expandedGroups[`${activeTitle}::${source}`] !== false;
         return (
-          <div key={source} className="rounded-lg border bg-card/40 p-2 [border-color:var(--layout-separator)]">
+          <div key={source} className="space-y-1.5">
             <button
               type="button"
               onClick={() => toggleGroup(source)}
-              className="flex w-full items-center justify-between text-left text-xs font-semibold text-foreground outline-none"
+              className="flex w-full items-center justify-between text-left text-xs font-semibold text-foreground outline-none group py-0.5"
             >
               <span className="flex items-center gap-1.5 min-w-0">
                 <ChevronRight className={`size-3.5 shrink-0 transition-transform text-muted-foreground ${isExpanded ? "rotate-90" : ""}`} />
                 <span className="truncate">{titleFromPath(source)}</span>
               </span>
-              <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded-full text-muted-foreground font-medium">
+              <span className="text-[10px] text-muted-foreground font-mono">
                 {mentions.length}
               </span>
             </button>
             {isExpanded && (
-              <div className="mt-2 space-y-1.5 pl-5 border-l [border-color:var(--layout-separator)]">
+              <div className="space-y-2">
                 {mentions.map((mention, idx) => (
                   <button
                     key={`${mention.line}-${idx}`}
@@ -908,10 +919,11 @@ export function MarkdownEditor({
                       setTimeout(dispatch, 100);
                       setTimeout(dispatch, 250);
                     }}
-                    className="w-full text-left text-xs p-1.5 rounded hover:bg-accent/50 transition-colors outline-none block"
+                    className="w-full text-left rounded-md border border-[var(--layout-separator)] bg-muted/20 p-2.5 hover:bg-accent/40 transition-colors outline-none block shadow-xs"
                   >
-                    <span className="text-[10px] font-mono text-muted-foreground mr-1.5">L{mention.line}</span>
-                    <span className="text-muted-foreground/90">{highlightQuery(mention.excerpt, document.title)}</span>
+                    <div className="text-[11px] leading-relaxed text-muted-foreground/90 whitespace-pre-wrap break-words">
+                      {highlightQuery(mention.excerpt, document.title)}
+                    </div>
                   </button>
                 ))}
               </div>

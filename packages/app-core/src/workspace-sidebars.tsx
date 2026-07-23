@@ -937,19 +937,30 @@ function RightContent({
     };
 
     const highlightQuery = (text: string, query: string) => {
-      if (!query.trim()) return <span>{text}</span>;
-      const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const regex = new RegExp(`(${escapedQuery})`, "gi");
-      const parts = text.split(regex);
+      if (!text) return null;
+      const cleanTarget = query.split("/").pop()?.replace(/\.(md|markdown)$/i, "") ?? query;
+      const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const targetEsc = escapeRegExp(cleanTarget);
+
+      const linkPattern = new RegExp(
+        `(\\[\\[[^\\]]*${targetEsc}[^\\]]*\\]\\]|\\[[^\\]]+\\]\\([^)]*${targetEsc}[^)]*\\)|${targetEsc})`,
+        "gi"
+      );
+
+      const parts = text.split(linkPattern);
+
       return (
         <span>
           {parts.map((part, idx) =>
-            regex.test(part) ? (
-              <mark key={idx} className="bg-primary/10 text-primary font-semibold px-0.5 rounded-sm">
+            linkPattern.test(part) ? (
+              <mark
+                key={idx}
+                className="inline rounded border border-[#a68a26]/60 bg-[#685512]/40 px-1 py-0.5 font-mono text-[11px] font-medium text-[#ffe57f] shadow-xs"
+              >
                 {part}
               </mark>
             ) : (
-              part
+              <span key={idx}>{part}</span>
             )
           )}
         </span>
@@ -1031,31 +1042,32 @@ function RightContent({
       return groups.map(([source, mentions]) => {
         const isExpanded = expandedGroups[`${activeTitle}::${source}`] !== false;
         return (
-          <div key={source} className="mb-2 space-y-1">
-            <div className="flex items-center justify-between py-1 px-1.5 hover:bg-accent/40 rounded-md group select-none">
+          <div key={source} className="mb-2.5 space-y-1">
+            <div className="flex items-center justify-between py-1 px-1 hover:bg-accent/40 rounded-md group select-none">
               <button
                 type="button"
                 onClick={() => toggleGroupExpanded(source)}
                 className="flex items-center gap-1.5 min-w-0 flex-1 text-left text-xs font-semibold text-foreground outline-none"
               >
                 <ChevronRight className={`size-3.5 shrink-0 transition-transform text-muted-foreground ${isExpanded ? "rotate-90" : ""}`} />
-                <FileText className="size-3.5 shrink-0 text-muted-foreground" />
                 <span className="truncate">{titleFromPath(source)}</span>
-                <span className="text-[10px] bg-muted/65 text-muted-foreground px-1.5 py-0.2 rounded-full font-medium ml-1">
+              </button>
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] text-muted-foreground font-mono">
                   {mentions.length}
                 </span>
-              </button>
-              <button
-                type="button"
-                title="Open note"
-                onClick={() => onOpenDocument(source)}
-                className="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground hover:text-foreground rounded-sm hover:bg-accent/60 outline-none"
-              >
-                <ExternalLink className="size-3" />
-              </button>
+                <button
+                  type="button"
+                  title="Open note"
+                  onClick={() => onOpenDocument(source)}
+                  className="opacity-0 group-hover:opacity-100 p-0.5 text-muted-foreground hover:text-foreground rounded-sm hover:bg-accent/60 outline-none"
+                >
+                  <ExternalLink className="size-3" />
+                </button>
+              </div>
             </div>
             {isExpanded && (
-              <div className="space-y-1">
+              <div className="space-y-1.5 mt-1">
                 {mentions.map((mention, idx) => (
                   <button
                     key={`${mention.line}-${idx}`}
@@ -1069,11 +1081,8 @@ function RightContent({
                       setTimeout(dispatch, 100);
                       setTimeout(dispatch, 250);
                     }}
-                    className="w-full flex flex-col items-start gap-0.5 ml-4 pl-3 py-1.5 text-left border-l border-[var(--layout-separator)] hover:bg-accent/40 rounded-r-md transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="w-full text-left rounded-md border border-[var(--layout-separator)] bg-muted/20 p-2.5 hover:bg-accent/40 transition-colors outline-none block shadow-xs"
                   >
-                    <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                      <span className="font-mono bg-muted/60 px-1 py-0.2 rounded">L{mention.line}</span>
-                    </div>
                     <div className="text-[11px] leading-relaxed text-muted-foreground/90 whitespace-pre-wrap break-words">
                       {highlightQuery(mention.excerpt, activeDocument.title)}
                     </div>

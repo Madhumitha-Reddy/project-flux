@@ -1854,9 +1854,12 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             showBacklinks={tab.showBacklinks}
             bookmarked={isTabBookmarked(tab)}
             onModeChange={(mode) => updateTab(tab.id, (current) => ({ ...current, mode }))}
-            onBacklinksChange={(showBacklinks) =>
-              updateTab(tab.id, (current) => ({ ...current, showBacklinks }))
-            }
+            onBacklinksChange={(showBacklinks) => {
+              updateTab(tab.id, (current) => ({ ...current, showBacklinks }));
+              if (showBacklinks) {
+                setRightSidebarPane("backlinks");
+              }
+            }}
             onBookmarkChange={() =>
               handleOpenAddBookmark({
                 title: tab.title,
