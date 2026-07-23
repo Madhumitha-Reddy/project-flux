@@ -89,6 +89,36 @@ export function workspaceHasTab(node: WorkspaceNode, tabId: number) {
   return workspaceLeaves(node).some((leaf) => leaf.tabIds.includes(tabId));
 }
 
+export function closeOtherWorkspaceTabs(
+  node: WorkspaceNode,
+  leafId: number,
+  tabId: number
+): WorkspaceNode {
+  const leaf = findWorkspaceLeaf(node, leafId);
+  if (!leaf?.tabIds.includes(tabId)) return node;
+  return mapWorkspaceLeaf(node, leafId, (current) => ({
+    ...current,
+    tabIds: [tabId],
+    activeTabId: tabId,
+  }));
+}
+
+export function closeWorkspaceTabsAfter(
+  node: WorkspaceNode,
+  leafId: number,
+  tabId: number
+): WorkspaceNode {
+  const leaf = findWorkspaceLeaf(node, leafId);
+  const tabIndex = leaf?.tabIds.indexOf(tabId) ?? -1;
+  if (!leaf || tabIndex < 0 || tabIndex === leaf.tabIds.length - 1) return node;
+  const tabIds = leaf.tabIds.slice(0, tabIndex + 1);
+  return mapWorkspaceLeaf(node, leafId, (current) => ({
+    ...current,
+    tabIds,
+    activeTabId: tabIds.includes(current.activeTabId) ? current.activeTabId : tabId,
+  }));
+}
+
 export function moveWorkspaceTab(
   node: WorkspaceNode,
   tabId: number,

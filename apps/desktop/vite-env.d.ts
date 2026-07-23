@@ -16,6 +16,7 @@ interface Window {
     }>;
     setTheme: (theme: "dark" | "light" | "system") => Promise<void>;
     openWindow: (url: string) => Promise<void>;
+    onBeforeClose: (handler: () => Promise<void>) => () => void;
     exportPdf: (options: {
       title: string;
       pageSize: "A4" | "Letter";

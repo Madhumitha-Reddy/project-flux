@@ -11,6 +11,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getPerformanceStats: () => ipcRenderer.invoke("get-performance-stats"),
   setTheme: (theme: "dark" | "light" | "system") => ipcRenderer.invoke("set-native-theme", theme),
   openWindow: (url: string) => ipcRenderer.invoke("open-window", url),
+  onBeforeClose: (handler: () => Promise<void>) => {
+    const listener = () => {
+      void handler().finally(() => ipcRenderer.send("flux-close-ready"));
+    };
+    ipcRenderer.on("flux-before-close", listener);
+    return () => ipcRenderer.off("flux-before-close", listener);
+  },
   exportPdf: (options: {
     title: string;
     pageSize: "A4" | "Letter";

@@ -9,6 +9,9 @@ const desktopRuntime: FluxRuntime = {
   client,
   statePersistence,
   getWindowId: async () => window.electronAPI?.getWindowId() ?? "main",
+  setTheme: async (theme) => {
+    await window.electronAPI?.setTheme(theme);
+  },
   connect: async () => {
     if (!window.electronAPI) return "Electron bridge unavailable";
     const response = await window.electronAPI.ping();
@@ -16,6 +19,7 @@ const desktopRuntime: FluxRuntime = {
   },
   getPerformanceStats: async () => window.electronAPI?.getPerformanceStats() ?? null,
   openWindow: async (url) => window.electronAPI?.openWindow(url),
+  onBeforeShutdown: (handler) => window.electronAPI?.onBeforeClose(handler) ?? (() => undefined),
   exportPdf: async (options) => window.electronAPI?.exportPdf(options) ?? null,
   selectVaultDirectory: async (mode) => window.electronAPI?.selectVaultDirectory(mode) ?? null,
 };

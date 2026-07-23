@@ -8,6 +8,8 @@ import * as path from "path";
 let mainWindow: BrowserWindow | null = null;
 let backendProcess: ChildProcess | null = null;
 const vaultEventStreams = new Map<string, AbortController>();
+const closeReadyWindows = new Set<number>();
+const closePendingWindows = new Set<number>();
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
@@ -16,6 +18,7 @@ const externalBackendOrigin = process.env.FLUX_BACKEND_URL;
 let backendOrigin = externalBackendOrigin ?? "";
 let backendToken = "";
 let backendHeartbeat: ReturnType<typeof setInterval> | null = null;
+let backendStartup: Promise<void> | null = null;
 const backendStartupAttempts = 300;
 
 interface RuntimeDescriptor {
@@ -248,7 +251,24 @@ function createWindow(targetUrl?: string) {
   }
 
   if (!mainWindow) mainWindow = window;
+  window.on("close", (event) => {
+    const id = window.webContents.id;
+    if (closeReadyWindows.delete(id)) return;
+    event.preventDefault();
+    if (closePendingWindows.has(id)) return;
+    closePendingWindows.add(id);
+    window.webContents.send("flux-before-close");
+    const timeout = setTimeout(() => {
+      if (window.isDestroyed()) return;
+      closePendingWindows.delete(id);
+      closeReadyWindows.add(id);
+      window.close();
+    }, 5_000);
+    timeout.unref();
+  });
   window.on("closed", () => {
+    closePendingWindows.delete(window.webContents.id);
+    closeReadyWindows.delete(window.webContents.id);
     if (mainWindow === window) mainWindow = null;
   });
 
@@ -256,10 +276,11 @@ function createWindow(targetUrl?: string) {
 }
 
 app.whenReady().then(async () => {
-  await ensureBackend();
+  backendStartup = ensureBackend();
+  createWindow();
+  await backendStartup;
   backendHeartbeat = setInterval(() => void backendReady(), 30_000);
   backendHeartbeat.unref();
-  createWindow();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -289,6 +310,14 @@ ipcMain.handle("get-window-id", (event) => {
   return mainWindow?.webContents.id === event.sender.id ? "main" : `window-${event.sender.id}`;
 });
 
+ipcMain.on("flux-close-ready", (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window || window.isDestroyed()) return;
+  closePendingWindows.delete(event.sender.id);
+  closeReadyWindows.add(event.sender.id);
+  window.close();
+});
+
 ipcMain.handle("select-vault-directory", async (_event, mode: unknown) => {
   if (mode !== "open" && mode !== "create") throw new TypeError("Invalid vault selection mode");
   const options = {
@@ -302,6 +331,7 @@ ipcMain.handle("select-vault-directory", async (_event, mode: unknown) => {
 });
 
 ipcMain.handle("flux-fetch", async (_event, request: unknown) => {
+  await backendStartup;
   if (!request || typeof request !== "object") throw new TypeError("Invalid Flux request");
   const value = request as { url?: unknown; method?: unknown; body?: unknown };
   if (typeof value.url !== "string" || !value.url.startsWith("/api/v1/")) {

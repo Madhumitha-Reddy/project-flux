@@ -22,6 +22,7 @@ import {
 } from "@flux/shared-ui/components/flux-tabs";
 import { ModeToggle } from "@flux/shared-ui/components/mode-toggle";
 import { FluxStatusBar } from "@flux/shared-ui/components/status-bar";
+import { ThemeProvider, type Theme } from "@flux/shared-ui/components/theme-provider";
 import { TooltipProvider } from "@flux/shared-ui/components/tooltip";
 import { Toaster, toast } from "@flux/shared-ui/components/sonner";
 import { VaultPluginHost, type PluginBundle } from "@flux/plugin-runtime";
@@ -67,6 +68,8 @@ import {
 import { PdfExportDialog } from "./pdf-export";
 import { FilePreview } from "./file-preview";
 import {
+  closeOtherWorkspaceTabs,
+  closeWorkspaceTabsAfter,
   findWorkspaceLeaf,
   mapWorkspaceLeaves,
   mapWorkspaceLeaf,
@@ -79,13 +82,14 @@ import {
   type WorkspaceLeafView,
   type WorkspaceNode,
 } from "./workspace-tree";
-import { createWorkspaceTab, type WorkspaceTab } from "./workspace-tabs";
+import { createGraphWorkspaceTab, createWorkspaceTab, type WorkspaceTab } from "./workspace-tabs";
 import {
   browserStatePersistence,
   useAppStore,
   type FluxStatePersistence,
   type IndexingProgress,
   type PersistedWorkspaceSession,
+  type PersistedWorkspaceTab,
   type VaultLifecycleState,
 } from "./app-state";
 
@@ -96,8 +100,10 @@ export interface FluxRuntime {
   selectVaultDirectory?: (mode: "open" | "create") => Promise<string | null>;
   getPerformanceStats?: () => Promise<FluxPerformanceStats | null>;
   openWindow?: (url: string) => Promise<void>;
+  onBeforeShutdown?: (handler: () => Promise<void>) => () => void;
   exportPdf?: (options: PdfExportOptions) => Promise<string | null>;
   getWindowId?: () => Promise<string>;
+  setTheme?: (theme: Theme) => Promise<void>;
   statePersistence?: FluxStatePersistence;
   vaultAccess?: "filesystem" | "registry";
 }
@@ -137,6 +143,13 @@ function getBootstrapStatus(client: FluxClient) {
 
 interface IndexedVaultInfo extends VaultInfo {
   indexing?: IndexingProgress;
+}
+
+interface PendingDocumentSave {
+  vaultId: string;
+  tabId: number;
+  document: DemoDocument;
+  content: string;
 }
 
 function lifecycleFromVault(info: VaultInfo): VaultLifecycleState {
@@ -186,21 +199,41 @@ function maxWorkspaceNodeId(node: WorkspaceNode): number {
     : Math.max(node.id, maxWorkspaceNodeId(node.children[0]), maxWorkspaceNodeId(node.children[1]));
 }
 
-function InitializationOverlay({ label }: { label: string }) {
+type InitializationPhase = "starting" | "vault" | "cache" | "workspace";
+
+const INITIALIZATION_PHASES: Array<{ id: InitializationPhase; label: string }> = [
+  { id: "starting", label: "Starting Flux" },
+  { id: "vault", label: "Loading vault" },
+  { id: "cache", label: "Loading cache" },
+  { id: "workspace", label: "Restoring workspace" },
+];
+
+function InitializationOverlay({ phase, label }: { phase: InitializationPhase; label: string }) {
+  const phaseIndex = INITIALIZATION_PHASES.findIndex((candidate) => candidate.id === phase);
   return (
-    <div className="fixed inset-0 z-[190] grid place-items-center bg-background/85 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[190] grid place-items-center bg-background">
       <div
         role="status"
         aria-live="polite"
-        className="flex flex-col items-center gap-3 text-center"
+        className="flex w-72 flex-col items-center gap-4 text-center"
       >
         <span
           aria-hidden="true"
           className="size-5 animate-spin rounded-full border-2 border-muted-foreground/25 border-t-foreground motion-reduce:animate-none"
         />
-        <div>
-          <p className="text-sm font-medium">Preparing Flux</p>
+        <div className="w-full">
+          <p className="text-sm font-medium">{INITIALIZATION_PHASES[phaseIndex].label}</p>
           <p className="mt-1 max-w-72 truncate text-xs text-muted-foreground">{label}</p>
+          <div className="mt-4 grid grid-cols-4 gap-1" aria-hidden="true">
+            {INITIALIZATION_PHASES.map((candidate, index) => (
+              <span
+                key={candidate.id}
+                className={`h-0.5 rounded-full ${
+                  index <= phaseIndex ? "bg-foreground/70" : "bg-muted-foreground/20"
+                }`}
+              />
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -250,7 +283,25 @@ function fileTitleFromPath(path: string) {
 }
 
 function workspaceTabPath(tab: WorkspaceTab) {
-  return tab.document?.path ?? tab.pdf?.path ?? tab.preview?.path;
+  return tab.document?.path ?? tab.pdf?.path ?? tab.preview?.path ?? tab.deferred?.path;
+}
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, task: (item: T) => Promise<R>) {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        results[index] = await task(items[index]);
+      }
+    })
+  );
+  return results;
+}
+
+function workspaceTabView(tab: WorkspaceTab | undefined): WorkspaceLeafView {
+  return tab?.kind === "graph" ? "graph" : "editor";
 }
 
 function EditorPathBreadcrumb({
@@ -443,7 +494,35 @@ function runWithToast<T>(operation: Promise<T>, feedback: AsyncFeedback) {
     .unwrap();
 }
 
-export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
+export function FluxApp(props: FluxAppProps) {
+  const storedTheme = useAppStore((state) => state.settings.theme);
+  const setAppSetting = useAppStore((state) => state.setSetting);
+  const statePersistence = props.runtime.statePersistence ?? browserStatePersistence;
+  const theme: Theme =
+    storedTheme === "dark" || storedTheme === "light" || storedTheme === "system"
+      ? storedTheme
+      : "system";
+  const changeTheme = useCallback(
+    (nextTheme: Theme) => {
+      if (useAppStore.getState().settings.theme === nextTheme) return;
+      setAppSetting("theme", nextTheme);
+      void statePersistence.saveAppSetting("theme", nextTheme).catch(() => undefined);
+    },
+    [setAppSetting, statePersistence]
+  );
+
+  useEffect(() => {
+    void props.runtime.setTheme?.(theme);
+  }, [props.runtime, theme]);
+
+  return (
+    <ThemeProvider theme={theme} onThemeChange={changeTheme}>
+      <FluxAppContent {...props} />
+    </ThemeProvider>
+  );
+}
+
+function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const lifecycle = useAppStore((state) => state.lifecycle);
   const indexing = useAppStore((state) => state.indexing);
   const hydrateAppState = useAppStore((state) => state.hydrate);
@@ -452,6 +531,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   const setStoredWorkspace = useAppStore((state) => state.setWorkspace);
   const statePersistence = runtime.statePersistence ?? browserStatePersistence;
   const [status, setStatus] = useState("Connecting…");
+  const [initializationPhase, setInitializationPhase] = useState<InitializationPhase>("starting");
   const [performanceStats, setPerformanceStats] = useState<FluxPerformanceStats | null>(null);
   const [tabs, setTabs] = useState<WorkspaceTab[]>(() => [
     createWorkspaceTab(1, documentFromLocation()),
@@ -499,7 +579,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   }>();
   const [layoutState, setLayoutState] = useState<FluxLayoutState>();
   const [expandedFolders, setExpandedFolders] = useState<string[]>([]);
-  const [nextTabId, setNextTabId] = useState(2);
+  const nextTabIdRef = useRef(2);
   const [workspaceRoot, setWorkspaceRoot] = useState<WorkspaceNode>({
     kind: "leaf",
     id: 1,
@@ -513,17 +593,24 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   const sessionSaveTimerRef = useRef<number | undefined>(undefined);
   const sessionSaveChainRef = useRef(Promise.resolve());
   const latestSessionRef = useRef<PersistedWorkspaceSession | undefined>(undefined);
+  const flushWorkspaceSessionRef = useRef<() => Promise<void>>(async () => undefined);
+  const flushPendingSavesRef = useRef<(vaultId?: string) => Promise<void>>(async () => undefined);
   const savedDocumentsRef = useRef(new Map<string, DemoDocument>());
   const tabsRef = useRef(tabs);
   const fileEntriesRef = useRef<FileEntry[]>([]);
   const loadedFoldersRef = useRef(new Set<string>());
   const vaultFileVersionsRef = useRef(new Map<string, string>());
   const vaultLoadRef = useRef(0);
+  const vaultOpenIntentRef = useRef(0);
   const activeVaultIdRef = useRef("");
   const graphVisibleRef = useRef(false);
   const referenceRequestsRef = useRef(new Map<string, Promise<DocumentReferences>>());
+  const navigationIntentRef = useRef(0);
   const saveTimersRef = useRef(new Map<string, number>());
   const saveChainsRef = useRef(new Map<string, Promise<void>>());
+  const saveBasesRef = useRef(new Map<string, DemoDocument>());
+  const pendingSavesRef = useRef(new Map<string, PendingDocumentSave>());
+  const deferredTabLoadsRef = useRef(new Map<string, Promise<void>>());
   const indexingToastVaultRef = useRef<string | null>(null);
   const pluginHostRef = useRef<VaultPluginHost | null>(null);
   const lastIndexingProgressRef = useRef<IndexingProgress | null>(null);
@@ -720,8 +807,9 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   }, [runtime]);
 
   const addTab = () => {
-    const id = nextTabId;
-    setNextTabId((current) => current + 1);
+    navigationIntentRef.current += 1;
+    if (vault) void flushPendingSaves(vault.id);
+    const id = nextTabIdRef.current++;
     setTabs((current) => [...current, createWorkspaceTab(id)]);
     setActiveTabId(id);
     setWorkspaceRoot((root) =>
@@ -734,41 +822,63 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     );
   };
 
-  const closeOtherTabs = (id: number) => {
-    setTabs((current) => current.filter((tab) => tab.id === id));
-    setActiveTabId(id);
-    setWorkspaceRoot((root) =>
-      mapWorkspaceLeaves(root, (leaf) => ({
-        ...leaf,
-        view: "editor",
-        tabIds: [id],
-        activeTabId: id,
-      }))
+  const closeOtherTabs = (leafId: number, id: number) => {
+    navigationIntentRef.current += 1;
+    if (vault) void flushPendingSaves(vault.id);
+    const tab = tabs.find((candidate) => candidate.id === id);
+    if (!tab) return;
+    const nextRoot = mapWorkspaceLeaf(
+      closeOtherWorkspaceTabs(workspaceRoot, leafId, id),
+      leafId,
+      (leaf) => ({ ...leaf, view: workspaceTabView(tab) })
     );
+    setTabs((current) => current.filter((candidate) => workspaceHasTab(nextRoot, candidate.id)));
+    setActiveTabId(id);
+    setActiveLeafId(leafId);
+    setWorkspaceRoot(nextRoot);
   };
 
-  const closeTabsAfter = (id: number) => {
-    const tabIndex = tabs.findIndex((tab) => tab.id === id);
-    if (tabIndex < 0) return;
-
-    const nextTabs = tabs.slice(0, tabIndex + 1);
-    setTabs(nextTabs);
-    if (!nextTabs.some((tab) => tab.id === activeTabId)) setActiveTabId(id);
+  const closeTabsAfter = (leafId: number, id: number) => {
+    navigationIntentRef.current += 1;
+    if (vault) void flushPendingSaves(vault.id);
+    const closedRoot = closeWorkspaceTabsAfter(workspaceRoot, leafId, id);
+    if (closedRoot === workspaceRoot) return;
+    const nextLeaf = findWorkspaceLeaf(closedRoot, leafId);
+    if (!nextLeaf) return;
+    const nextActiveTab = tabs.find((candidate) => candidate.id === nextLeaf.activeTabId);
+    const nextRoot = mapWorkspaceLeaf(closedRoot, leafId, (leaf) => ({
+      ...leaf,
+      view: workspaceTabView(nextActiveTab),
+    }));
+    setTabs((current) => current.filter((candidate) => workspaceHasTab(nextRoot, candidate.id)));
+    setWorkspaceRoot(nextRoot);
+    if (activeLeafId === leafId) setActiveTabId(nextLeaf.activeTabId);
   };
 
-  const closeAllTabs = () => {
-    const replacement = createWorkspaceTab(nextTabId);
-    setNextTabId((current) => current + 1);
+  const closeAllTabs = (leafId: number) => {
+    navigationIntentRef.current += 1;
+    if (vault) void flushPendingSaves(vault.id);
+    const leaf = findWorkspaceLeaf(workspaceRoot, leafId);
+    if (!leaf) return;
+    if (workspaceLeaves(workspaceRoot).length > 1) {
+      const nextRoot = removeWorkspaceLeaf(workspaceRoot, leafId);
+      if (!nextRoot) return;
+      const nextLeaf = findWorkspaceLeaf(nextRoot, activeLeafId) ?? workspaceLeaves(nextRoot)[0];
+      setTabs((current) => current.filter((candidate) => workspaceHasTab(nextRoot, candidate.id)));
+      setWorkspaceRoot(nextRoot);
+      setActiveLeafId(nextLeaf.id);
+      setActiveTabId(nextLeaf.activeTabId);
+      return;
+    }
+    const replacement = createWorkspaceTab(nextTabIdRef.current++);
     setTabs([replacement]);
     setActiveTabId(replacement.id);
-    setWorkspaceRoot((root) =>
-      mapWorkspaceLeaves(root, (leaf) => ({
-        ...leaf,
-        view: "editor",
-        tabIds: [replacement.id],
-        activeTabId: replacement.id,
-      }))
-    );
+    setWorkspaceRoot({
+      ...leaf,
+      view: "editor",
+      tabIds: [replacement.id],
+      activeTabId: replacement.id,
+    });
   };
 
   const togglePinned = (id: number) => {
@@ -782,11 +892,13 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   };
 
   const setLeafView = (id: number, view: WorkspaceLeafView) => {
+    navigationIntentRef.current += 1;
     setWorkspaceRoot((root) => mapWorkspaceLeaf(root, id, (leaf) => ({ ...leaf, view })));
     setActiveLeafId(id);
   };
 
   const splitLeaf = (id: number, direction: "horizontal" | "vertical") => {
+    navigationIntentRef.current += 1;
     const secondLeafId = nextLeafIdRef.current++;
     const splitId = nextLeafIdRef.current++;
     setWorkspaceRoot((root) =>
@@ -801,15 +913,16 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   };
 
   const closeLeafTab = (leafId: number, tabId: number) => {
+    navigationIntentRef.current += 1;
+    if (vault) void flushPendingSaves(vault.id);
     const leaf = findWorkspaceLeaf(workspaceRoot, leafId);
     const tab = tabs.find((candidate) => candidate.id === tabId);
     if (!leaf || !tab) return;
 
     const leaves = workspaceLeaves(workspaceRoot);
     if (leaves.length === 1 && leaf.tabIds.length === 1) {
-      if (!tab.document && !tab.pdf && !tab.preview) return;
-      const replacement = createWorkspaceTab(nextTabId);
-      setNextTabId((current) => current + 1);
+      if (!tab.kind && !tab.document && !tab.pdf && !tab.preview) return;
+      const replacement = createWorkspaceTab(nextTabIdRef.current++);
       setTabs((current) => [...current.filter((candidate) => candidate.id !== tabId), replacement]);
       setWorkspaceRoot({
         ...leaf,
@@ -836,9 +949,10 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
 
     const tabIds = leaf.tabIds.filter((id) => id !== tabId);
     const nextActiveId = leaf.activeTabId === tabId ? tabIds[0] : leaf.activeTabId;
+    const nextActiveTab = tabs.find((candidate) => candidate.id === nextActiveId);
     const nextRoot = mapWorkspaceLeaf(workspaceRoot, leafId, (current) => ({
       ...current,
-      view: "editor",
+      view: workspaceTabView(nextActiveTab),
       tabIds,
       activeTabId: nextActiveId,
     }));
@@ -850,10 +964,11 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   };
 
   const replaceWorkspaceDocument = (document: DemoDocument | null) => {
+    navigationIntentRef.current += 1;
     const replacement = createWorkspaceTab(1, document);
     setTabs([replacement]);
     setActiveTabId(1);
-    setNextTabId(2);
+    nextTabIdRef.current = 2;
     setWorkspaceRoot({ kind: "leaf", id: 1, view: "editor", tabIds: [1], activeTabId: 1 });
     setActiveLeafId(1);
   };
@@ -1084,12 +1199,19 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     return resolved;
   };
 
-  const loadVault = async (info: VaultInfo) => {
-    if (!runtime.client) return;
+  const loadVault = async (info: VaultInfo, openIntent: number) => {
+    if (!runtime.client || vaultOpenIntentRef.current !== openIntent) return false;
+    navigationIntentRef.current += 1;
     const load = ++vaultLoadRef.current;
-    const isCurrent = () => vaultLoadRef.current === load;
+    const isCurrent = () =>
+      vaultLoadRef.current === load && vaultOpenIntentRef.current === openIntent;
+    setInitializationPhase("cache");
+    setStatus(`Loading ${info.name} cache…`);
+    let entries = await fetchFileChildren(info.id, "");
+    if (!isCurrent()) return false;
+    const persisted = await statePersistence.loadWorkspaceSession(windowIdRef.current, info.id);
+    if (!isCurrent()) return false;
     activeVaultIdRef.current = info.id;
-    setStatus(`Opening ${info.name}…`);
     setAppVault(info, "initializing", null);
     setSessionVaultId("");
     setVault(info);
@@ -1099,18 +1221,25 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     setExpandedFolders([]);
     setLayoutState(undefined);
     savedDocumentsRef.current.clear();
+    saveBasesRef.current.clear();
     vaultFileVersionsRef.current.clear();
-    let entries = await refreshFiles(info.id, isCurrent);
-    if (!isCurrent()) return;
-    const persisted = await statePersistence.loadWorkspaceSession(windowIdRef.current, info.id);
-    if (!isCurrent()) return;
+    loadedFoldersRef.current.clear();
+    fileEntriesRef.current = entries;
+    setFileEntries(entries);
+    void refreshVaultGraph(info.id).catch(() => undefined);
+    setInitializationPhase("workspace");
+    setStatus(`Restoring ${info.name} workspace…`);
     if (persisted?.expandedFolders?.length) {
       const restoredChildren = (
-        await Promise.all(
-          persisted.expandedFolders.map((parent) => fetchFileChildren(info.id, parent))
-        )
+        await mapWithConcurrency(persisted.expandedFolders, 4, async (parent) => {
+          try {
+            return await fetchFileChildren(info.id, parent);
+          } catch {
+            return [];
+          }
+        })
       ).flat();
-      if (!isCurrent()) return;
+      if (!isCurrent()) return false;
       for (const parent of persisted.expandedFolders) loadedFoldersRef.current.add(parent);
       entries = [
         ...new Map([...entries, ...restoredChildren].map((entry) => [entry.path, entry])).values(),
@@ -1120,9 +1249,32 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     }
     const entryByPath = new Map(entries.map((entry) => [entry.path, entry]));
     const requestedTabs = persisted?.tabs ?? [];
+    const eagerTabIds = new Set<number>();
+    if (persisted?.activeTabId) eagerTabIds.add(persisted.activeTabId);
+    if (persisted?.workspaceRoot) {
+      for (const leaf of workspaceLeaves(persisted.workspaceRoot))
+        eagerTabIds.add(leaf.activeTabId);
+    }
     const restored = await Promise.all(
-      requestedTabs.map(async ({ id, path, mode, pinned }, index) => {
+      requestedTabs.map(async ({ id, path, kind, graphRootPath, mode, pinned }, index) => {
         try {
+          if (kind === "graph") {
+            return {
+              ...createGraphWorkspaceTab(id || index + 1, graphRootPath),
+              mode,
+              pinned,
+            };
+          }
+          if (!path) return null;
+          if (!eagerTabIds.has(id)) {
+            return {
+              ...createWorkspaceTab(id || index + 1),
+              title: fileTitleFromPath(path),
+              deferred: { path },
+              mode,
+              pinned,
+            };
+          }
           let entry = entryByPath.get(path);
           if (!entry) entry = (await runtime.client!.getFileMetadata(info.id, path)) ?? undefined;
           // Workspace state may outlive a format-policy change or an external delete.
@@ -1167,34 +1319,42 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
         }
       })
     );
-    if (!isCurrent()) return;
+    if (!isCurrent()) return false;
     const loaded = restored.flatMap((tab) => (tab ? [tab] : []));
     setVaultDocuments(loaded.flatMap((tab) => (tab.document ? [tab.document] : [])));
     if (!loaded.length) {
       replaceWorkspaceDocument(null);
     } else {
       const active =
-        loaded.find(
-          (tab) =>
-            (tab.document?.path ?? tab.pdf?.path ?? tab.preview?.path) === persisted?.activePath
-        ) ?? loaded[0];
+        loaded.find((tab) => tab.id === persisted?.activeTabId) ??
+        loaded.find((tab) => workspaceTabPath(tab) === persisted?.activePath) ??
+        loaded[0];
       const tabIds = loaded.map((tab) => tab.id);
       const restoredRoot = restoreWorkspaceRoot(persisted?.workspaceRoot, new Set(tabIds));
-      const nextRoot: WorkspaceNode = restoredRoot ?? {
+      const baseRoot: WorkspaceNode = restoredRoot ?? {
         kind: "leaf",
         id: 1,
-        view: "editor",
+        view: workspaceTabView(active),
         tabIds,
         activeTabId: active.id,
       };
+      const tabById = new Map(loaded.map((tab) => [tab.id, tab]));
+      const nextRoot = mapWorkspaceLeaves(baseRoot, (leaf) => {
+        const tab = tabById.get(leaf.activeTabId);
+        return {
+          ...leaf,
+          view: tab?.kind === "graph" ? "graph" : leaf.view === "graph" ? "editor" : leaf.view,
+        };
+      });
       setTabs(loaded);
-      setActiveTabId(active.id);
-      setNextTabId(Math.max(...tabIds) + 1);
+      nextTabIdRef.current = Math.max(...tabIds) + 1;
       setWorkspaceRoot(nextRoot);
       const restoredActiveLeaf = persisted?.activeLeafId
         ? findWorkspaceLeaf(nextRoot, persisted.activeLeafId)
         : null;
-      setActiveLeafId(restoredActiveLeaf?.id ?? workspaceLeaves(nextRoot)[0].id);
+      const nextActiveLeaf = restoredActiveLeaf ?? workspaceLeaves(nextRoot)[0];
+      setActiveLeafId(nextActiveLeaf.id);
+      setActiveTabId(nextActiveLeaf.activeTabId);
       nextLeafIdRef.current = maxWorkspaceNodeId(nextRoot) + 1;
     }
     if (persisted?.leftSidebarPane) setLeftSidebarPane(persisted.leftSidebarPane);
@@ -1206,6 +1366,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     setStatus(`Go backend connected · ${info.name}`);
     const nextIndexing = (info as IndexedVaultInfo).indexing ?? null;
     setLifecycle(nextIndexing ? "indexing" : lifecycleFromVault(info), nextIndexing);
+    return true;
   };
 
   useEffect(() => {
@@ -1213,22 +1374,33 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     const persisted: PersistedWorkspaceSession = {
       version: 1,
       vaultId: vault.id,
-      tabs: tabs.flatMap((tab) =>
-        tab.document?.path || tab.pdf?.path || tab.preview?.path
+      tabs: tabs.flatMap((tab): PersistedWorkspaceTab[] =>
+        tab.kind === "graph"
           ? [
               {
                 id: tab.id,
-                path: tab.document?.path ?? tab.pdf?.path ?? tab.preview!.path,
+                kind: tab.kind,
+                graphRootPath: tab.graphRootPath,
                 mode: tab.mode,
                 pinned: Boolean(tab.pinned),
               },
             ]
-          : []
+          : workspaceTabPath(tab)
+            ? [
+                {
+                  id: tab.id,
+                  path: workspaceTabPath(tab),
+                  mode: tab.mode,
+                  pinned: Boolean(tab.pinned),
+                },
+              ]
+            : []
       ),
       activePath: (() => {
         const tab = tabs.find((candidate) => candidate.id === activeTabId);
-        return tab?.document?.path ?? tab?.pdf?.path ?? tab?.preview?.path;
+        return tab ? workspaceTabPath(tab) : undefined;
       })(),
+      activeTabId,
       workspaceRoot,
       activeLeafId,
       leftSidebarPane,
@@ -1261,19 +1433,25 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     workspaceRoot,
   ]);
 
-  useEffect(() => {
-    const flushSession = () => {
-      const persisted = latestSessionRef.current;
-      if (!persisted) return;
-      window.clearTimeout(sessionSaveTimerRef.current);
+  const flushWorkspaceSession = async () => {
+    const persisted = latestSessionRef.current;
+    window.clearTimeout(sessionSaveTimerRef.current);
+    if (persisted) {
       sessionSaveChainRef.current = sessionSaveChainRef.current
         .catch(() => undefined)
-        .then(() => statePersistence.saveWorkspaceSession(windowIdRef.current, persisted))
-        .catch(() => undefined);
-    };
+        .then(() => statePersistence.saveWorkspaceSession(windowIdRef.current, persisted));
+    }
+    await sessionSaveChainRef.current;
+  };
+  useEffect(() => {
+    flushWorkspaceSessionRef.current = flushWorkspaceSession;
+  });
+
+  useEffect(() => {
+    const flushSession = () => void flushWorkspaceSessionRef.current().catch(() => undefined);
     window.addEventListener("pagehide", flushSession);
     return () => window.removeEventListener("pagehide", flushSession);
-  }, [statePersistence]);
+  }, []);
 
   useEffect(() => {
     if (!runtime.client || !vault) return;
@@ -1433,9 +1611,20 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     if (!runtime.client || !runtime.selectVaultDirectory) return;
     const path = await runtime.selectVaultDirectory(mode);
     if (!path) return;
+    const openIntent = ++vaultOpenIntentRef.current;
+    try {
+      if (vault) await flushPendingSaves(vault.id);
+    } catch (error) {
+      toast.error("Could not switch vault", {
+        description: `Save the current note first. ${errorMessage(error)}`,
+      });
+      return;
+    }
+    if (vaultOpenIntentRef.current !== openIntent) return;
     const previousLifecycle = lifecycle;
     const previousProgress = indexing;
     setLifecycle("initializing", null);
+    setInitializationPhase("vault");
     setStatus(mode === "create" ? "Creating vault…" : "Initializing vault…");
     try {
       await runWithToast(
@@ -1444,7 +1633,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             mode === "create"
               ? await runtime.client!.createVault({ path })
               : await runtime.client!.openVault({ path });
-          await loadVault(info);
+          if (!(await loadVault(info, openIntent))) return;
           if (runtime.vaultAccess !== "registry") {
             await statePersistence.rememberVault({ id: info.id, name: info.name, path });
           }
@@ -1462,6 +1651,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
         }
       );
     } catch (error) {
+      if (vaultOpenIntentRef.current !== openIntent) return;
       setLifecycle(previousLifecycle, previousProgress);
       setStatus(error instanceof Error ? error.message : "Vault operation failed");
     }
@@ -1469,15 +1659,26 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
 
   const openRegisteredVault = async (registered: { name: string; path: string }) => {
     if (!runtime.client) return;
+    const openIntent = ++vaultOpenIntentRef.current;
+    try {
+      if (vault) await flushPendingSaves(vault.id);
+    } catch (error) {
+      toast.error("Could not switch vault", {
+        description: `Save the current note first. ${errorMessage(error)}`,
+      });
+      return;
+    }
+    if (vaultOpenIntentRef.current !== openIntent) return;
     const previousLifecycle = lifecycle;
     const previousProgress = indexing;
     setLifecycle("initializing", null);
+    setInitializationPhase("vault");
     setStatus(`Initializing ${registered.name}…`);
     try {
       await runWithToast(
         (async () => {
           const info = await runtime.client!.openVault({ path: registered.path });
-          await loadVault(info);
+          if (!(await loadVault(info, openIntent))) return;
           if (runtime.vaultAccess !== "registry") {
             await statePersistence.rememberVault({
               id: info.id,
@@ -1499,6 +1700,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
         }
       );
     } catch (error) {
+      if (vaultOpenIntentRef.current !== openIntent) return;
       setLifecycle(previousLifecycle, previousProgress);
       setStatus(error instanceof Error ? error.message : "Vault operation failed");
     }
@@ -1526,54 +1728,120 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     }
   };
 
-  const persistDocument = async (tabId: number, document: DemoDocument, content: string) => {
-    if (!runtime.client || !vault || !document.path) return;
-    const path = document.path;
-    const saved = savedDocumentsRef.current.get(path) ?? document;
+  const documentSaveKey = (vaultId: string, path: string) => `${vaultId}:${path}`;
+
+  const persistDocument = async (request: PendingDocumentSave) => {
+    const path = request.document.path;
+    if (!runtime.client || !path) return;
+    const { vaultId, tabId, document, content } = request;
+    const key = documentSaveKey(vaultId, path);
+    const saved = saveBasesRef.current.get(key) ?? document;
     if (!saved.contentHash || saved.content === content) return;
     const result = await runtime.client.patchFile({
-      vaultId: vault.id,
+      vaultId,
       path,
       expectedHash: saved.contentHash,
       edits: [singleTextEdit(saved.content, content)],
     });
     const next = { ...saved, content, contentHash: result.contentHash };
+    saveBasesRef.current.set(key, next);
+    if (activeVaultIdRef.current !== vaultId) return;
     savedDocumentsRef.current.set(path, next);
     setVaultDocuments((current) =>
       current.map((item) =>
         item.path === path ? { ...item, content, contentHash: result.contentHash } : item
       )
     );
-    updateTab(tabId, (tab) =>
-      tab.document?.path === path && tab.document.content === content
-        ? { ...tab, document: { ...tab.document, contentHash: result.contentHash } }
-        : tab
-    );
+    updateTab(tabId, (tab) => {
+      const tabDocument = tab.document;
+      return tabDocument?.path === path && tabDocument.content === content
+        ? { ...tab, document: { ...tabDocument, contentHash: result.contentHash } }
+        : tab;
+    });
   };
 
-  const enqueueSave = (tabId: number, document: DemoDocument, content: string) => {
-    if (!document.path) return Promise.resolve();
-    const previous = saveChainsRef.current.get(document.path) ?? Promise.resolve();
-    const next = previous
-      .catch(() => undefined)
-      .then(() => persistDocument(tabId, document, content));
-    saveChainsRef.current.set(document.path, next);
+  const enqueueSave = (request: PendingDocumentSave) => {
+    if (!request.document.path) return Promise.resolve();
+    const key = documentSaveKey(request.vaultId, request.document.path);
+    const previous = saveChainsRef.current.get(key) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => persistDocument(request));
+    saveChainsRef.current.set(key, next);
+    void next
+      .finally(() => {
+        if (saveChainsRef.current.get(key) === next) saveChainsRef.current.delete(key);
+      })
+      .catch(() => undefined);
     return next;
   };
 
   const scheduleSave = (tabId: number, document: DemoDocument, content: string) => {
-    if (!document.path || !document.contentHash) return;
-    const existing = saveTimersRef.current.get(document.path);
+    if (!vault || !document.path || !document.contentHash) return;
+    const request = { vaultId: vault.id, tabId, document, content };
+    const key = documentSaveKey(vault.id, document.path);
+    if (!saveBasesRef.current.has(key)) {
+      saveBasesRef.current.set(key, savedDocumentsRef.current.get(document.path) ?? document);
+    }
+    pendingSavesRef.current.set(key, request);
+    const existing = saveTimersRef.current.get(key);
     if (existing) window.clearTimeout(existing);
     const timer = window.setTimeout(() => {
-      void enqueueSave(tabId, document, content).catch((error: unknown) => {
+      saveTimersRef.current.delete(key);
+      pendingSavesRef.current.delete(key);
+      void enqueueSave(request).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : "Unknown save error";
         setStatus(`Save failed · ${message}`);
         toast.error(`Could not save ${titleFromPath(document.path!)}`, { description: message });
       });
     }, 500);
-    saveTimersRef.current.set(document.path, timer);
+    saveTimersRef.current.set(key, timer);
   };
+
+  const flushPendingSaves = async (vaultId?: string) => {
+    const saves = new Set<Promise<void>>();
+    for (const [key, request] of pendingSavesRef.current) {
+      if (vaultId && request.vaultId !== vaultId) continue;
+      const timer = saveTimersRef.current.get(key);
+      if (timer) window.clearTimeout(timer);
+      saveTimersRef.current.delete(key);
+      pendingSavesRef.current.delete(key);
+      saves.add(enqueueSave(request));
+    }
+    for (const [key, save] of saveChainsRef.current) {
+      if (!vaultId || key.startsWith(`${vaultId}:`)) saves.add(save);
+    }
+    await Promise.all(saves);
+  };
+  useEffect(() => {
+    flushPendingSavesRef.current = flushPendingSaves;
+  });
+
+  useEffect(() => {
+    const flushCurrentVault = () => {
+      if (vault) void flushPendingSavesRef.current(vault.id);
+    };
+    const flushAll = () => void flushPendingSavesRef.current();
+    const flushWhenHidden = () => {
+      if (document.visibilityState === "hidden") flushCurrentVault();
+    };
+    window.addEventListener("blur", flushCurrentVault);
+    window.addEventListener("pagehide", flushAll);
+    document.addEventListener("visibilitychange", flushWhenHidden);
+    return () => {
+      window.removeEventListener("blur", flushCurrentVault);
+      window.removeEventListener("pagehide", flushAll);
+      document.removeEventListener("visibilitychange", flushWhenHidden);
+    };
+  }, [vault]);
+
+  useEffect(() => {
+    if (!runtime.onBeforeShutdown) return;
+    return runtime.onBeforeShutdown(async () => {
+      await Promise.allSettled([
+        flushWorkspaceSessionRef.current(),
+        flushPendingSavesRef.current(),
+      ]);
+    });
+  }, [runtime]);
 
   const movePath = async (
     sourcePath: string,
@@ -1589,13 +1857,27 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       const operation = (async () => {
         for (const tab of tabs) {
           if (!tab.document?.path) continue;
-          const timer = saveTimersRef.current.get(tab.document.path);
+          const key = documentSaveKey(vault.id, tab.document.path);
+          const timer = saveTimersRef.current.get(key);
           if (timer) window.clearTimeout(timer);
-          await enqueueSave(tab.id, tab.document, tab.document.content);
+          saveTimersRef.current.delete(key);
+          pendingSavesRef.current.delete(key);
+          await enqueueSave({
+            vaultId: vault.id,
+            tabId: tab.id,
+            document: tab.document,
+            content: tab.document.content,
+          });
         }
         await runtime.client!.moveFile({ vaultId: vault.id, sourcePath, destinationPath });
         setTabs((current) =>
           current.map((tab) => {
+            if (tab.deferred) {
+              const path = movedDocumentPath(tab.deferred.path, sourcePath, destinationPath);
+              return path === tab.deferred.path
+                ? tab
+                : { ...tab, title: fileTitleFromPath(path), deferred: { path } };
+            }
             if (tab.pdf) {
               const path = movedDocumentPath(tab.pdf.path, sourcePath, destinationPath);
               return path === tab.pdf.path
@@ -1698,23 +1980,29 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     try {
       await runWithToast(
         (async () => {
-          await runtime.client!.deleteFile(vault.id, path);
           for (const document of tabs.map((tab) => tab.document)) {
             if (
               !document?.path ||
               (document.path !== path && !document.path.startsWith(`${path}/`))
             )
               continue;
-            const timer = saveTimersRef.current.get(document.path);
+            const key = documentSaveKey(vault.id, document.path);
+            const timer = saveTimersRef.current.get(key);
             if (timer) window.clearTimeout(timer);
+            saveTimersRef.current.delete(key);
+            pendingSavesRef.current.delete(key);
+            const inFlight = saveChainsRef.current.get(key);
+            if (inFlight) await inFlight;
+            saveBasesRef.current.delete(key);
             savedDocumentsRef.current.delete(document.path);
           }
+          await runtime.client!.deleteFile(vault.id, path);
           const activePath =
             activeTab?.document?.path ?? activeTab?.pdf?.path ?? activeTab?.preview?.path;
           const activeWasDeleted = activePath === path || activePath?.startsWith(`${path}/`);
           setTabs((current) =>
             current.filter((tab) => {
-              const candidate = tab.document?.path ?? tab.pdf?.path ?? tab.preview?.path;
+              const candidate = workspaceTabPath(tab);
               return !candidate || (candidate !== path && !candidate.startsWith(`${path}/`));
             })
           );
@@ -1948,6 +2236,8 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       !tab.document &&
       !tab.pdf &&
       !tab.preview &&
+      !tab.deferred &&
+      !tab.kind &&
       workspaceLeaves(workspaceRoot).length === 1 &&
       leaf?.tabIds.length === 1
     );
@@ -1967,17 +2257,18 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   };
 
   const commandsFor = (tab: WorkspaceTab, leafId = activeLeafId): FluxTabCommands => {
-    const tabIndex = tabs.findIndex((candidate) => candidate.id === tab.id);
+    const leaf = findWorkspaceLeaf(workspaceRoot, leafId);
+    const tabIndex = leaf?.tabIds.indexOf(tab.id) ?? -1;
     const protectedNewTab = isProtectedNewTab(tab, leafId);
 
     return {
       pinned: tab.pinned,
-      canCloseOthers: tabs.length > 1,
-      canCloseAfter: tabIndex >= 0 && tabIndex < tabs.length - 1,
+      canCloseOthers: (leaf?.tabIds.length ?? 0) > 1,
+      canCloseAfter: tabIndex >= 0 && tabIndex < (leaf?.tabIds.length ?? 0) - 1,
       onClose: protectedNewTab ? undefined : () => closeLeafTab(leafId, tab.id),
-      onCloseOthers: () => closeOtherTabs(tab.id),
-      onCloseAfter: () => closeTabsAfter(tab.id),
-      onCloseAll: closeAllTabs,
+      onCloseOthers: () => closeOtherTabs(leafId, tab.id),
+      onCloseAfter: () => closeTabsAfter(leafId, tab.id),
+      onCloseAll: () => closeAllTabs(leafId),
       onTogglePin: () => togglePinned(tab.id),
       onMoveToNewWindow: () => popOutTab(tab),
       onSplitRight: () => splitLeaf(leafId, "horizontal"),
@@ -1996,16 +2287,150 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     event.dataTransfer.effectAllowed = "move";
   };
 
+  const hydrateDeferredTab = (tab: WorkspaceTab) => {
+    if (!runtime.client || !vault || !tab.deferred) return Promise.resolve();
+    const vaultId = vault.id;
+    const path = tab.deferred.path;
+    const key = `${vaultId}:${tab.id}`;
+    const existing = deferredTabLoadsRef.current.get(key);
+    if (existing) return existing;
+    const load = (async () => {
+      try {
+        const entry = await runtime.client!.getFileMetadata(vaultId, path);
+        if (!entry || entry.kind === "directory" || activeVaultIdRef.current !== vaultId) return;
+        let replacement: WorkspaceTab;
+        if (entry.kind === "binary") {
+          const data = await runtime.client!.readBinaryFile(vaultId, path);
+          if (activeVaultIdRef.current !== vaultId) return;
+          if (/\.pdf$/i.test(path)) {
+            replacement = {
+              ...tab,
+              deferred: undefined,
+              title: fileTitleFromPath(path),
+              pdf: { path, data },
+            };
+          } else {
+            const mimeType = mimeTypeForPath(path);
+            const text = decodedText(data);
+            if (/^(image|audio|video)\//.test(mimeType) || text === null) {
+              replacement = {
+                ...tab,
+                deferred: undefined,
+                title: fileTitleFromPath(path),
+                preview: { path, data, mimeType },
+              };
+            } else {
+              const file = await runtime.client!.readFile(vaultId, path);
+              const document = {
+                title: titleFromPath(file.path),
+                path: file.path,
+                content: file.content,
+                contentHash: file.contentHash,
+              };
+              replacement = { ...tab, deferred: undefined, title: document.title, document };
+              savedDocumentsRef.current.set(path, document);
+              setVaultDocuments((current) => [
+                ...current.filter((item) => item.path !== path),
+                document,
+              ]);
+            }
+          }
+        } else {
+          const file = await runtime.client!.readFile(vaultId, path);
+          if (activeVaultIdRef.current !== vaultId) return;
+          const document = {
+            title: titleFromPath(file.path),
+            path: file.path,
+            content: file.content,
+            contentHash: file.contentHash,
+          };
+          replacement = { ...tab, deferred: undefined, title: document.title, document };
+          savedDocumentsRef.current.set(path, document);
+          setVaultDocuments((current) => [
+            ...current.filter((item) => item.path !== path),
+            document,
+          ]);
+        }
+        vaultFileVersionsRef.current.set(path, `${entry.modifiedAt}:${entry.sizeBytes}`);
+        setTabs((current) =>
+          current.map((candidate) =>
+            candidate.id === tab.id && candidate.deferred?.path === path ? replacement : candidate
+          )
+        );
+      } catch (error) {
+        if (activeVaultIdRef.current === vaultId)
+          setStatus(error instanceof Error ? error.message : `Could not restore ${path}`);
+      } finally {
+        deferredTabLoadsRef.current.delete(key);
+      }
+    })();
+    deferredTabLoadsRef.current.set(key, load);
+    return load;
+  };
+
   const activateLeafTab = (leafId: number, tabId: number) => {
+    navigationIntentRef.current += 1;
+    if (vault) void flushPendingSaves(vault.id);
+    const tab = tabs.find((candidate) => candidate.id === tabId);
     setWorkspaceRoot((root) =>
       mapWorkspaceLeaf(root, leafId, (leaf) => ({
         ...leaf,
-        view: tabId === leaf.activeTabId ? leaf.view : "editor",
+        view: workspaceTabView(tab),
         activeTabId: tabId,
       }))
     );
     setActiveLeafId(leafId);
     setActiveTabId(tabId);
+    if (tab?.deferred) void hydrateDeferredTab(tab);
+  };
+
+  const openGraphTab = (leafId = activeLeafId, graphRootPath?: string) => {
+    navigationIntentRef.current += 1;
+    if (vault) void flushPendingSaves(vault.id);
+    const leaf = findWorkspaceLeaf(workspaceRoot, leafId);
+    if (!leaf) return;
+    const existing = tabs.find(
+      (tab) =>
+        leaf.tabIds.includes(tab.id) && tab.kind === "graph" && tab.graphRootPath === graphRootPath
+    );
+    if (existing) {
+      setWorkspaceRoot((root) =>
+        mapWorkspaceLeaf(root, leafId, (current) => ({
+          ...current,
+          view: "graph",
+          activeTabId: existing.id,
+        }))
+      );
+      setActiveLeafId(leafId);
+      setActiveTabId(existing.id);
+      return;
+    }
+
+    const activeTab = tabs.find((tab) => tab.id === leaf.activeTabId);
+    const replaceable =
+      activeTab &&
+      !activeTab.pinned &&
+      !activeTab.kind &&
+      !activeTab.document &&
+      !activeTab.pdf &&
+      !activeTab.preview
+        ? activeTab
+        : undefined;
+    const id = replaceable?.id ?? nextTabIdRef.current++;
+    const graphTab = createGraphWorkspaceTab(id, graphRootPath);
+    setTabs((current) =>
+      replaceable ? current.map((tab) => (tab.id === id ? graphTab : tab)) : [...current, graphTab]
+    );
+    setWorkspaceRoot((root) =>
+      mapWorkspaceLeaf(root, leafId, (current) => ({
+        ...current,
+        view: "graph",
+        tabIds: replaceable ? current.tabIds : [...current.tabIds, id],
+        activeTabId: id,
+      }))
+    );
+    setActiveLeafId(leafId);
+    setActiveTabId(id);
   };
 
   const moveTabToLeaf = (event: DragEvent, targetLeafId: number) => {
@@ -2020,7 +2445,14 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     }
     if (!Number.isInteger(parsed.tabId) || !Number.isInteger(parsed.leafId)) return;
     if (parsed.leafId === targetLeafId) return;
-    setWorkspaceRoot((root) => moveWorkspaceTab(root, parsed.tabId, parsed.leafId, targetLeafId));
+    const tab = tabs.find((candidate) => candidate.id === parsed.tabId);
+    setWorkspaceRoot((root) =>
+      mapWorkspaceLeaf(
+        moveWorkspaceTab(root, parsed.tabId, parsed.leafId, targetLeafId),
+        targetLeafId,
+        (leaf) => ({ ...leaf, view: workspaceTabView(tab) })
+      )
+    );
     setActiveLeafId(targetLeafId);
     setActiveTabId(parsed.tabId);
   };
@@ -2126,7 +2558,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             }
             onRevealInNavigation={() => setLeftSidebarPane("files")}
             onOpenLinkedView={(view) => {
-              if (view === "graph") setLeafView(leafId, "graph");
+              if (view === "graph") openGraphTab(leafId, tab.document?.path);
               else setRightSidebarPane(view);
             }}
             onMoveToNewWindow={() => popOutTab(tab)}
@@ -2141,7 +2573,11 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       }
       {...commandsFor(tab, leafId)}
     >
-      {tab.pdf ? (
+      {tab.deferred ? (
+        <div className="grid h-full place-items-center text-xs text-muted-foreground">
+          Loading {tab.title}…
+        </div>
+      ) : tab.pdf ? (
         <Suspense
           fallback={
             <div className="grid h-full place-items-center text-xs text-muted-foreground">
@@ -2200,6 +2636,8 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     : 0;
 
   const openDocument = async (identifier: string) => {
+    const navigationIntent = ++navigationIntentRef.current;
+    if (vault) void flushPendingSaves(vault.id);
     const exactEntry = vault ? fileEntries.find((entry) => entry.path === identifier) : undefined;
     const titleMatches = vault
       ? fileEntries.filter(
@@ -2216,7 +2654,8 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       requestedPath
         ? tab.document?.path === requestedPath ||
           tab.pdf?.path === requestedPath ||
-          tab.preview?.path === requestedPath
+          tab.preview?.path === requestedPath ||
+          tab.deferred?.path === requestedPath
         : tab.document?.title === identifier
     );
     if (existing) {
@@ -2229,22 +2668,25 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
           activeTabId: existing.id,
         }))
       );
+      if (existing.deferred) void hydrateDeferredTab(existing);
       return;
     }
 
     const placeTab = (create: (id: number) => WorkspaceTab) => {
+      if (navigationIntentRef.current !== navigationIntent) return;
       const leaf = findWorkspaceLeaf(workspaceRoot, activeLeafId);
-      const emptyTab =
-        leaf?.tabIds.length === 1
-          ? tabs.find(
-              (tab) =>
-                tab.id === leaf.activeTabId &&
-                !tab.document &&
-                !tab.pdf &&
-                !tab.preview &&
-                !tab.pinned
-            )
-          : undefined;
+      const emptyTab = leaf
+        ? tabs.find(
+            (tab) =>
+              tab.id === leaf.activeTabId &&
+              !tab.kind &&
+              !tab.document &&
+              !tab.pdf &&
+              !tab.preview &&
+              !tab.deferred &&
+              !tab.pinned
+          )
+        : undefined;
       if (emptyTab) {
         const replacement = create(emptyTab.id);
         setTabs((current) => current.map((tab) => (tab.id === emptyTab.id ? replacement : tab)));
@@ -2258,8 +2700,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
         );
         return;
       }
-      const id = nextTabId;
-      setNextTabId((current) => current + 1);
+      const id = nextTabIdRef.current++;
       setTabs((current) => [...current, create(id)]);
       setActiveTabId(id);
       setWorkspaceRoot((root) =>
@@ -2351,6 +2792,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
 
   const createNote = async (parent = "", requestedName = "Untitled") => {
     if (vault && runtime.client) {
+      const navigationIntent = ++navigationIntentRef.current;
       const titles = new Set(fileEntries.map((entry) => entry.path.toLocaleLowerCase()));
       let suffix = 0;
       const base = requestedName.replace(/\.(md|markdown)$/i, "") || "Untitled";
@@ -2366,7 +2808,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
               content: "---\ntags: []\n---\n\n",
             });
             await refreshFiles();
-            await openDocument(file.path);
+            if (navigationIntentRef.current === navigationIntent) await openDocument(file.path);
             setStatus(`Created note · ${file.path}`);
           })(),
           {
@@ -2386,8 +2828,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     const titles = new Set(documents.map((document) => document.title));
     while (titles.has(title)) title = `${base} ${++suffix}`;
     const document = { title, content: "---\ntags: []\n---\n\n" };
-    const id = nextTabId;
-    setNextTabId((current) => current + 1);
+    const id = nextTabIdRef.current++;
     setTabs((current) => [...current, createWorkspaceTab(id, document)]);
     setActiveTabId(id);
     setWorkspaceRoot((root) =>
@@ -2429,11 +2870,16 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
           if (!active) return;
           const lastPath = appBootstrap.lastVaultPath;
           if (lastPath) {
+            const openIntent = ++vaultOpenIntentRef.current;
             try {
-              await loadVault(await runtime.client.openVault({ path: lastPath }));
+              setInitializationPhase("vault");
+              setStatus("Loading vault…");
+              const info = await runtime.client.openVault({ path: lastPath });
+              if (!(await loadVault(info, openIntent))) return;
               return;
             } catch {
-              await statePersistence.forgetLastVault();
+              if (vaultOpenIntentRef.current === openIntent)
+                await statePersistence.forgetLastVault();
             }
           }
           setAppVault(null, "active", null);
@@ -2510,7 +2956,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
                     }))
                   )
                 }
-                onCloseAll={closeAllTabs}
+                onCloseAll={() => closeAllTabs(leaf.id)}
                 onSelect={(id) => activateLeafTab(leaf.id, Number(id))}
               />
             }
@@ -2626,11 +3072,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
               <GraphView
                 documents={documents}
                 vaultGraph={vaultGraph}
-                activePath={
-                  leafActiveTab?.document?.path ??
-                  leafActiveTab?.pdf?.path ??
-                  leafActiveTab?.preview?.path
-                }
+                activePath={leafActiveTab?.graphRootPath}
                 bookmarked={leafActiveTab?.bookmarked ?? false}
                 onBookmarkChange={(bookmarked) => {
                   if (leafActiveTab) {
@@ -2703,7 +3145,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             }
             stickySidebar={
               <WorkspaceRibbon
-                onGraph={() => setLeafView(activeLeafId, "graph")}
+                onGraph={() => openGraphTab(activeLeafId)}
                 onFiles={() => setLeafView(activeLeafId, "editor")}
                 onPlugins={openPluginManager}
               />
@@ -2814,11 +3256,12 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             }
             leftSidebarOptions={{ defaultWidth: 260, minWidth: 200, maxWidth: 480 }}
             rightSidebarOptions={{ defaultWidth: 280, minWidth: 220, maxWidth: 480 }}
-            storageKey={false}
             layoutState={layoutState}
             onLayoutChange={setLayoutState}
           />
-          {lifecycle === "initializing" ? <InitializationOverlay label={status} /> : null}
+          {lifecycle === "initializing" || (vault && sessionVaultId !== vault.id) ? (
+            <InitializationOverlay phase={initializationPhase} label={status} />
+          ) : null}
           {pluginView ? (
             <div className="fixed inset-0 z-[210] grid place-items-center bg-black/55 p-4 backdrop-blur-sm">
               <section className="flex h-[min(44rem,90vh)] w-full max-w-5xl flex-col overflow-hidden rounded-xl border bg-background shadow-2xl [border-color:var(--layout-separator)]">

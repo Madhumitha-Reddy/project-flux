@@ -33,7 +33,11 @@ var (
 	ErrDuplicateID   = errors.New("vault identity is already open from another path")
 )
 
-const vaultIdleTTL = 15 * time.Minute
+const (
+	vaultIdleTTL           = 60 * time.Second
+	maxVaultContexts       = 3
+	vaultIdleSweepInterval = vaultIdleTTL / 2
+)
 
 type identity struct {
 	VaultID            string `json:"vault_id"`
@@ -60,6 +64,7 @@ type Context struct {
 	changes  []revisionChange
 	lease    *runtimecoord.FileLock
 	lastUsed atomic.Int64
+	waiters  atomic.Int64
 }
 
 type revisionChange struct {
@@ -84,6 +89,8 @@ func (c *Context) publish(events []watcherRuntime.Event) {
 }
 
 func (c *Context) WaitRevision(ctx context.Context, after uint64) uint64 {
+	c.waiters.Add(1)
+	defer c.waiters.Add(-1)
 	for {
 		current := c.Revision.Load()
 		if current != after {
@@ -251,11 +258,15 @@ func (m *Manager) Open(requestedPath string) (*Context, error) {
 	if err != nil {
 		return nil, err
 	}
-	m.evictIdle(time.Now(), root)
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	retired := m.evictExpiredLocked(time.Now(), root)
+	defer func() {
+		m.mu.Unlock()
+		closeContexts(retired)
+	}()
 	for id, existing := range m.contexts {
 		if samePath(existing.root, root) {
+			retired = append(retired, m.evictLRULocked(maxVaultContexts, root)...)
 			existing.touch()
 			m.currentID = id
 			return existing, nil
@@ -327,6 +338,7 @@ func (m *Manager) Open(requestedPath string) (*Context, error) {
 		next.indexing.Add(1)
 		go next.runIndexer(indexContext)
 	}
+	retired = append(retired, m.evictLRULocked(maxVaultContexts-1, root)...)
 	m.contexts[vaultIdentity.VaultID] = next
 	m.currentID = vaultIdentity.VaultID
 	owned = true
@@ -473,12 +485,14 @@ func (m *Manager) Get(vaultID string) (*Context, error) {
 
 func (c *Context) touch() { c.lastUsed.Store(time.Now().UnixNano()) }
 
-func (m *Manager) evictIdle(now time.Time, keepRoot string) {
-	m.mu.Lock()
+func (m *Manager) evictExpiredLocked(now time.Time, keepRoot string) []*Context {
 	cutoff := now.Add(-vaultIdleTTL).UnixNano()
 	retired := make([]*Context, 0)
 	for id, context := range m.contexts {
-		if context.lastUsed.Load() >= cutoff || (keepRoot != "" && samePath(context.root, keepRoot)) {
+		if id == m.currentID ||
+			context.waiters.Load() > 0 ||
+			context.lastUsed.Load() >= cutoff ||
+			(keepRoot != "" && samePath(context.root, keepRoot)) {
 			continue
 		}
 		delete(m.contexts, id)
@@ -487,15 +501,56 @@ func (m *Manager) evictIdle(now time.Time, keepRoot string) {
 		}
 		retired = append(retired, context)
 	}
-	m.mu.Unlock()
-	for _, context := range retired {
+	return retired
+}
+
+func (m *Manager) evictLRULocked(limit int, keepRoot string) []*Context {
+	retired := make([]*Context, 0)
+	for len(m.contexts) > limit {
+		oldestID := ""
+		var oldestUsed int64
+		for id, context := range m.contexts {
+			if id == m.currentID ||
+				context.waiters.Load() > 0 ||
+				(keepRoot != "" && samePath(context.root, keepRoot)) {
+				continue
+			}
+			lastUsed := context.lastUsed.Load()
+			if oldestID == "" || lastUsed < oldestUsed {
+				oldestID = id
+				oldestUsed = lastUsed
+			}
+		}
+		if oldestID == "" {
+			break
+		}
+		context := m.contexts[oldestID]
+		delete(m.contexts, oldestID)
+		if m.currentID == oldestID {
+			m.currentID = ""
+		}
+		retired = append(retired, context)
+	}
+	return retired
+}
+
+func closeContexts(contexts []*Context) {
+	for _, context := range contexts {
 		_ = context.close()
 	}
 }
 
+func (m *Manager) evictIdle(now time.Time, keepRoot string) {
+	m.mu.Lock()
+	retired := m.evictExpiredLocked(now, keepRoot)
+	retired = append(retired, m.evictLRULocked(maxVaultContexts, keepRoot)...)
+	m.mu.Unlock()
+	closeContexts(retired)
+}
+
 func (m *Manager) reapIdle() {
 	defer close(m.done)
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(vaultIdleSweepInterval)
 	defer ticker.Stop()
 	for {
 		select {

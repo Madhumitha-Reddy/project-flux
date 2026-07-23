@@ -67,17 +67,6 @@ const rightOptions: Array<{ id: RightPane; label: string; icon: typeof List }> =
   { id: "source-control", label: "Source Control", icon: GitBranch },
 ];
 
-function storedExplorerValue<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") return fallback;
-  try {
-    return (
-      (JSON.parse(localStorage.getItem(`flux-explorer-${key}`) ?? "null") as T | null) ?? fallback
-    );
-  } catch {
-    return fallback;
-  }
-}
-
 function IconButton({
   label,
   children,
@@ -256,21 +245,12 @@ function FileExplorer({
   onOpenPdf: () => void;
   onCreateNote: (parent?: string) => void;
 }) {
-  const [folders, setFolders] = useState(() =>
-    storedExplorerValue("folders", ["Projects", "Reference"])
-  );
-  const [locations, setLocations] = useState<Record<string, string | null>>(() =>
-    storedExplorerValue("locations", {
-      "Project plan": "Projects",
-      "Performance notes": "Reference",
-    })
-  );
-  const [order, setOrder] = useState(() =>
-    storedExplorerValue(
-      "order",
-      documents.map(({ title }) => title)
-    )
-  );
+  const [folders, setFolders] = useState(() => ["Projects", "Reference"]);
+  const [locations, setLocations] = useState<Record<string, string | null>>(() => ({
+    "Project plan": "Projects",
+    "Performance notes": "Reference",
+  }));
+  const [order, setOrder] = useState(() => documents.map(({ title }) => title));
   const [sortByName, setSortByName] = useState(false);
   const [autoReveal, setAutoReveal] = useState(true);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -287,12 +267,6 @@ function FileExplorer({
         : (rank.get(a.title) ?? order.length) - (rank.get(b.title) ?? order.length)
     );
   }, [documents, order, sortByName]);
-
-  useEffect(() => {
-    localStorage.setItem("flux-explorer-folders", JSON.stringify(folders));
-    localStorage.setItem("flux-explorer-locations", JSON.stringify(locations));
-    localStorage.setItem("flux-explorer-order", JSON.stringify(order));
-  }, [folders, locations, order]);
 
   const confirmMove = () => {
     if (!pendingMove) return;
