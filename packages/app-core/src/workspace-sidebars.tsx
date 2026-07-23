@@ -1048,18 +1048,18 @@ function RightContent({
       return groups.map(([source, mentions]) => {
         const isExpanded = expandedGroups[`${activeTitle}::${source}`] === true;
         return (
-          <div key={source} className="mb-2.5 space-y-1">
+          <div key={source} className="mb-0.5">
             <div className="flex items-center justify-between py-1 px-1 hover:bg-accent/40 rounded-md group select-none">
               <button
                 type="button"
                 onClick={() => toggleGroupExpanded(source)}
-                className="flex items-center gap-1.5 min-w-0 flex-1 text-left text-[11px] font-semibold text-muted-foreground outline-none hover:text-foreground transition-colors"
+                className="flex items-center gap-1.5 min-w-0 flex-1 text-left text-[13px] font-semibold text-muted-foreground outline-none hover:text-foreground transition-colors"
               >
                 <ChevronRight className={`size-3.5 shrink-0 transition-transform ${isExpanded ? "rotate-90 text-foreground" : ""}`} />
                 <span className="truncate">{titleFromPath(source)}</span>
               </button>
               <div className="flex items-center gap-1">
-                <span className="text-[11px] text-muted-foreground font-medium">
+                <span className="text-[13px] text-muted-foreground font-medium">
                   {mentions.length}
                 </span>
                 <button
@@ -1089,7 +1089,7 @@ function RightContent({
                     }}
                     className="w-full text-left rounded-md border border-[var(--layout-separator)] bg-transparent p-2 hover:bg-accent/40 transition-colors outline-none block shadow-none"
                   >
-                    <div className="text-[11px] leading-relaxed text-muted-foreground/90 whitespace-pre-wrap break-words">
+                    <div className="text-[12px] leading-relaxed text-muted-foreground/90 whitespace-pre-wrap break-words">
                       {highlightQuery(mention.excerpt, activeDocument.title)}
                     </div>
                   </button>
