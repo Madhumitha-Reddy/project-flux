@@ -615,3 +615,10 @@
     display: none;
   }
 }
+
+.bg-sidebar-selected {
+  background-color: oklch(0.88 0 0);
+}
+.dark .bg-sidebar-selected {
+  background-color: oklch(0.33 0 0);
+}
