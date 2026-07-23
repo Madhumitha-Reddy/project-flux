@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Bookmark,
   BookOpen,
@@ -42,7 +42,7 @@ import { livePreview } from "./live-preview";
 import { isMarkdownListLine, listIndentWidth, nestedOrderedMarkerEdit } from "./markdown-list";
 import { obsidianMarkdownExtensions } from "./obsidian-markdown";
 import { showRenderError } from "./render-feedback";
-import { linkedMentionsFor } from "./link-index";
+import { linkedMentionsFor, unlinkedMentionsFor } from "./link-index";
 
 const ReadingView = lazy(() => import("./reading-view"));
 
@@ -817,15 +817,110 @@ export function MarkdownEditor({
   documents?: DemoDocument[];
 }) {
   const { frontmatter, body } = splitFrontmatter(document.content);
-  const backlinkGroups = useMemo(() => {
-    const grouped = new Map<string, ReturnType<typeof linkedMentionsFor>>();
-    for (const mention of linkedMentionsFor(documents, document.path ?? document.title)) {
+  const activeTitle = document.path ?? document.title;
+  const linkedMentions = useMemo(
+    () => linkedMentionsFor(documents, activeTitle),
+    [documents, activeTitle]
+  );
+  const unlinkedMentions = useMemo(
+    () => unlinkedMentionsFor(documents, document.title),
+    [documents, document.title]
+  );
+
+  const groupMentions = (mentions: ReturnType<typeof linkedMentionsFor>) => {
+    const grouped = new Map<string, typeof mentions>();
+    for (const mention of mentions) {
       const group = grouped.get(mention.source) ?? [];
       group.push(mention);
       grouped.set(mention.source, group);
     }
     return [...grouped];
-  }, [document.path, document.title, documents]);
+  };
+
+  const linkedGroups = useMemo(() => groupMentions(linkedMentions), [linkedMentions]);
+  const unlinkedGroups = useMemo(() => groupMentions(unlinkedMentions), [unlinkedMentions]);
+
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+
+  const toggleGroup = (source: string) => {
+    const key = `${activeTitle}::${source}`;
+    setExpandedGroups((prev) => ({
+      ...prev,
+      [key]: prev[key] === false,
+    }));
+  };
+
+  const titleFromPath = (path: string) => {
+    return path.split("/").pop()?.replace(/\.(md|markdown)$/i, "") ?? path;
+  };
+
+  const highlightQuery = (text: string, query: string) => {
+    if (!query.trim()) return <span>{text}</span>;
+    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`(${escapedQuery})`, "gi");
+    const parts = text.split(regex);
+    return (
+      <span>
+        {parts.map((part, idx) =>
+          regex.test(part) ? (
+            <mark key={idx} className="bg-primary/10 text-primary font-semibold px-0.5 rounded-sm">
+              {part}
+            </mark>
+          ) : (
+            part
+          )
+        )}
+      </span>
+    );
+  };
+
+  const renderGroupList = (groups: Array<[string, ReturnType<typeof linkedMentionsFor>]>) => (
+    <div className="space-y-2">
+      {groups.map(([source, mentions]) => {
+        const isExpanded = expandedGroups[`${activeTitle}::${source}`] !== false;
+        return (
+          <div key={source} className="rounded-lg border bg-card/40 p-2 [border-color:var(--layout-separator)]">
+            <button
+              type="button"
+              onClick={() => toggleGroup(source)}
+              className="flex w-full items-center justify-between text-left text-xs font-semibold text-foreground outline-none"
+            >
+              <span className="flex items-center gap-1.5 min-w-0">
+                <ChevronRight className={`size-3.5 shrink-0 transition-transform text-muted-foreground ${isExpanded ? "rotate-90" : ""}`} />
+                <span className="truncate">{titleFromPath(source)}</span>
+              </span>
+              <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded-full text-muted-foreground font-medium">
+                {mentions.length}
+              </span>
+            </button>
+            {isExpanded && (
+              <div className="mt-2 space-y-1.5 pl-5 border-l [border-color:var(--layout-separator)]">
+                {mentions.map((mention, idx) => (
+                  <button
+                    key={`${mention.line}-${idx}`}
+                    type="button"
+                    onClick={() => {
+                      onOpenDocument?.(source);
+                      const detail = { path: source, line: mention.line, excerpt: mention.excerpt };
+                      const dispatch = () => window.dispatchEvent(new CustomEvent("flux-navigate-editor", { detail }));
+                      dispatch();
+                      setTimeout(dispatch, 30);
+                      setTimeout(dispatch, 100);
+                      setTimeout(dispatch, 250);
+                    }}
+                    className="w-full text-left text-xs p-1.5 rounded hover:bg-accent/50 transition-colors outline-none block"
+                  >
+                    <span className="text-[10px] font-mono text-muted-foreground mr-1.5">L{mention.line}</span>
+                    <span className="text-muted-foreground/90">{highlightQuery(mention.excerpt, document.title)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 
   return (
     <div
@@ -869,32 +964,40 @@ export function MarkdownEditor({
         </ReadingViewBoundary>
       )}
       {showBacklinks ? (
-        <section className="mx-auto max-w-[760px] border-t px-9 py-5 [border-color:var(--layout-separator)]">
-          <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Backlinks in document
-          </h2>
-          {backlinkGroups.length ? (
-            <div className="space-y-2">
-              {backlinkGroups.map(([source, mentions]) => (
-                <button
-                  key={source}
-                  type="button"
-                  onClick={() => onOpenDocument?.(source)}
-                  className="block w-full rounded-md px-2 py-2 text-left text-sm hover:bg-accent/60"
-                >
-                  <span className="font-medium text-foreground">{source}</span>
-                  <span className="ml-2 text-xs text-muted-foreground">
-                    {mentions.length} {mentions.length === 1 ? "mention" : "mentions"}
-                  </span>
-                  <span className="mt-1 line-clamp-2 block text-xs text-muted-foreground">
-                    {mentions[0]?.excerpt}
-                  </span>
-                </button>
-              ))}
+        <section className="mx-auto max-w-[760px] border-t px-9 py-6 space-y-6 [border-color:var(--layout-separator)]">
+          {/* Linked Mentions Section */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-foreground">
+                Linked mentions
+              </h2>
+              <span className="text-[10px] bg-muted/65 text-muted-foreground px-2 py-0.5 rounded-full font-semibold">
+                {linkedMentions.length}
+              </span>
             </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">No backlinks found.</p>
-          )}
+            {linkedGroups.length ? (
+              renderGroupList(linkedGroups)
+            ) : (
+              <p className="text-xs text-muted-foreground italic py-1">No backlinks found.</p>
+            )}
+          </div>
+
+          {/* Unlinked Mentions Section */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Unlinked mentions
+              </h2>
+              <span className="text-[10px] bg-muted/65 text-muted-foreground px-2 py-0.5 rounded-full font-semibold">
+                {unlinkedMentions.length}
+              </span>
+            </div>
+            {unlinkedGroups.length ? (
+              renderGroupList(unlinkedGroups)
+            ) : (
+              <p className="text-xs text-muted-foreground italic py-1">No unlinked mentions found.</p>
+            )}
+          </div>
         </section>
       ) : null}
     </div>

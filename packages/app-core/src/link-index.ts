@@ -54,24 +54,68 @@ function resolverFor(documents: DemoDocument[]) {
   return (rawTarget: string, source?: DemoDocument) => {
     if (/^[a-z][a-z\d+.-]*:/i.test(rawTarget)) return undefined;
     const target = normalizeTarget(rawTarget).toLocaleLowerCase();
-    const exact = candidates.get(target);
-    if (exact?.size === 1) return [...exact][0];
+
+    // 1. Check exact document path match
+    for (const document of documents) {
+      const docPath = normalizeTarget(document.path ?? "").toLocaleLowerCase();
+      if (docPath && docPath === target) {
+        return documentId(document);
+      }
+    }
+
+    // 2. Check relative path match from source directory
     if (source?.path) {
       const directory = normalizeTarget(source.path).split("/").slice(0, -1).join("/");
       const relative = normalizeTarget(`${directory}/${target}`).toLocaleLowerCase();
-      const relativeMatches = candidates.get(relative);
-      if (relativeMatches?.size === 1) return [...relativeMatches][0];
+      for (const document of documents) {
+        const docPath = normalizeTarget(document.path ?? "").toLocaleLowerCase();
+        if (docPath && docPath === relative) {
+          return documentId(document);
+        }
+      }
     }
-    const basename = candidates.get(target.slice(target.lastIndexOf("/") + 1));
-    return basename?.size === 1 ? [...basename][0] : undefined;
+
+    // 3. Exact alias match if size is 1
+    const exact = candidates.get(target);
+    if (exact?.size === 1) return [...exact][0];
+
+    // 4. Basename match if size is 1
+    const targetBasename = target.slice(target.lastIndexOf("/") + 1);
+    const basenameMatches = candidates.get(targetBasename);
+    if (basenameMatches?.size === 1) return [...basenameMatches][0];
+
+    // 5. Fallback for duplicates: prioritize root document or exact match before returning undefined
+    if (basenameMatches && basenameMatches.size > 1) {
+      const rootMatch = [...basenameMatches].find((id) => {
+        const doc = documents.find((d) => documentId(d) === id);
+        return doc?.path && normalizeTarget(doc.path).toLocaleLowerCase() === targetBasename;
+      });
+      if (rootMatch) return rootMatch;
+    }
+
+    return undefined;
   };
 }
 
 function targetId(documents: DemoDocument[], identifier: string) {
   const exact = documents.find((document) => documentId(document) === identifier);
   if (exact) return documentId(exact);
-  const matches = documents.filter((document) => document.title === identifier);
-  return matches.length === 1 ? documentId(matches[0]) : identifier;
+
+  const targetNorm = normalizeTarget(identifier).toLocaleLowerCase();
+  for (const document of documents) {
+    const docPath = normalizeTarget(document.path ?? "").toLocaleLowerCase();
+    if (docPath && docPath === targetNorm) {
+      return documentId(document);
+    }
+  }
+
+  const matches = documents.filter(
+    (document) =>
+      document.title.toLocaleLowerCase() === identifier.toLocaleLowerCase() ||
+      normalizeTarget(document.path ?? "").toLocaleLowerCase() === targetNorm
+  );
+  if (matches.length > 0) return documentId(matches[0]);
+  return identifier;
 }
 
 function rawLinks(content: string) {
