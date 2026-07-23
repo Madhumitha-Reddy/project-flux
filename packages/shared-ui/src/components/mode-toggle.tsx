@@ -56,8 +56,8 @@ export function ModeToggle({ className }: { className?: string }) {
         className
       )}
     >
-      <Sun className="size-[1.2rem] scale-100 rotate-0 dark:scale-0 dark:-rotate-90" />
-      <Moon className="absolute size-[1.2rem] scale-0 rotate-90 dark:scale-100 dark:rotate-0" />
+      <Sun className="size-[15px] scale-100 rotate-0 dark:scale-0 dark:-rotate-90" />
+      <Moon className="absolute size-[15px] scale-0 rotate-90 dark:scale-100 dark:rotate-0" />
       <span className="sr-only">Toggle theme</span>
     </button>
   );

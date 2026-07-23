@@ -26,7 +26,6 @@ import {
   MinusCircle,
   RefreshCw,
   Search,
-  Settings,
   Settings2,
   Tags,
   X,
@@ -1404,13 +1403,11 @@ export function WorkspaceRibbon({
   onGraph,
   onFiles,
   onCanvas,
-  onSettings,
   plugins,
 }: {
   onGraph?: () => void;
   onFiles?: () => void;
   onCanvas?: () => void;
-  onSettings?: () => void;
   plugins?: Record<string, boolean>;
 }) {
   const showFiles = !plugins || plugins["file-explorer"] !== false;
@@ -1446,11 +1443,6 @@ export function WorkspaceRibbon({
           <GitBranch className="size-4" />
         </IconButton>
       ) : null}
-      <div className="mt-auto">
-        <IconButton label="Settings" onClick={onSettings}>
-          <Settings className="size-4" />
-        </IconButton>
-      </div>
     </nav>
   );
 }
