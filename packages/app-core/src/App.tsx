@@ -2075,8 +2075,8 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
                 document: replacement.document,
                 pdf: replacement.pdf,
                 preview: replacement.preview,
-                history: historyNavigation ? replacement.history : newHistory,
-                historyIndex: historyNavigation ? replacement.historyIndex : newIndex,
+                history: historyNavigation ? tab.history : newHistory,
+                historyIndex: historyNavigation ? tab.historyIndex : newIndex,
               };
             }
             return tab;
