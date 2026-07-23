@@ -853,6 +853,8 @@ function RightContent({
   const [collapsedResults, setCollapsedResults] = useState(false);
   const [moreContext, setMoreContext] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [linkedExpanded, setLinkedExpanded] = useState(true);
+  const [unlinkedExpanded, setUnlinkedExpanded] = useState(false);
   const [sortByCount, setSortByCount] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const filterField = filterVisible ? (
@@ -1156,24 +1158,49 @@ function RightContent({
         <div className="px-3 py-3 text-xs h-full overflow-y-auto">
           {/* Linked Mentions Section */}
           <div className="mb-6">
-            <div className="flex items-center justify-between py-1 font-semibold text-foreground mb-2">
-              <span>Linked mentions</span>
+            <button 
+              className="flex w-full items-center justify-between py-1 font-semibold text-foreground mb-2 outline-none group hover:text-foreground transition-colors"
+              onClick={() => setLinkedExpanded(prev => !prev)}
+            >
+              <div className="flex items-center gap-1.5 min-w-0">
+                <ChevronRight className={`size-3.5 shrink-0 text-muted-foreground transition-transform ${linkedExpanded ? "rotate-90 text-foreground" : "group-hover:text-foreground"}`} />
+                <span>Linked mentions</span>
+              </div>
               <span className="text-[11px] text-muted-foreground">
                 {totalLinkedCount}
               </span>
-            </div>
-            {totalLinkedCount > 0 ? (
+            </button>
+            {linkedExpanded && totalLinkedCount > 0 ? (
               renderGroupedMentions(linked)
+            ) : null}
+            {linkedExpanded && totalLinkedCount === 0 ? (
+              <div className="text-[11px] text-muted-foreground px-5">
+                No linked mentions found.
+              </div>
             ) : null}
           </div>
 
           {/* Unlinked Mentions Section */}
           <div>
-            <div className="flex items-center justify-between py-1 font-semibold text-muted-foreground mb-2">
-              <span>Unlinked mentions</span>
-            </div>
-            {totalUnlinkedCount > 0 ? (
+            <button 
+              className="flex w-full items-center justify-between py-1 font-semibold text-muted-foreground mb-2 outline-none group hover:text-foreground transition-colors"
+              onClick={() => setUnlinkedExpanded(prev => !prev)}
+            >
+              <div className="flex items-center gap-1.5 min-w-0">
+                <ChevronRight className={`size-3.5 shrink-0 transition-transform ${unlinkedExpanded ? "rotate-90 text-foreground" : "group-hover:text-foreground"}`} />
+                <span>Unlinked mentions</span>
+              </div>
+              <span className="text-[11px]">
+                {totalUnlinkedCount}
+              </span>
+            </button>
+            {unlinkedExpanded && totalUnlinkedCount > 0 ? (
               renderGroupedMentions(unlinked)
+            ) : null}
+            {unlinkedExpanded && totalUnlinkedCount === 0 ? (
+              <div className="text-[11px] text-muted-foreground px-5">
+                No unlinked mentions found.
+              </div>
             ) : null}
           </div>
         </div>
