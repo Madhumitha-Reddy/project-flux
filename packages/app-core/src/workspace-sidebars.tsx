@@ -999,8 +999,9 @@ function RightContent({
     }, [activeTitle, refreshTrigger, storeVersion]);
 
     const rawUnlinkedMentions = useMemo(() => {
+      if (!activeDocument) return [];
       return globalBacklinkStore.getUnlinkedMentions(activeDocument.title);
-    }, [activeDocument.title, refreshTrigger, storeVersion]);
+    }, [activeDocument?.title, refreshTrigger, storeVersion]);
 
     // group & search filtering: running instantly in O(N)
     const linked = useMemo(() => {
@@ -1090,7 +1091,7 @@ function RightContent({
                     className="w-full text-left rounded-md border border-[var(--layout-separator)] bg-transparent p-2 hover:bg-accent/40 transition-colors outline-none block shadow-none"
                   >
                     <div className="text-[12px] leading-relaxed text-muted-foreground/90 whitespace-pre-wrap break-words">
-                      {highlightQuery(mention.excerpt, activeDocument.title)}
+                      {highlightQuery(mention.excerpt, activeTitle)}
                     </div>
                   </button>
                 ))}
