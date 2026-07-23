@@ -40,7 +40,7 @@ import {
   type DemoDocument,
 } from "./markdown-editor";
 import { setFrontmatterProperty } from "./frontmatter";
-import { buildLinkIndex } from "./link-index";
+import { buildLinkIndex, isIgnoredPath } from "./link-index";
 import {
   WorkspaceLeftSidebar,
   WorkspaceRibbon,
@@ -862,7 +862,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     if (!runtime.client) return [];
     const previousDocuments = new Map(savedDocumentsRef.current);
     const markdownEntries = entries.filter(
-      (entry) => entry.kind === "markdown" || entry.kind === "text"
+      (entry) => (entry.kind === "markdown" || entry.kind === "text") && !isIgnoredPath(entry.path)
     );
     const loaded = await Promise.all(
       markdownEntries.map(async (entry) => {

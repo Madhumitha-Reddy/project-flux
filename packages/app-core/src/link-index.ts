@@ -38,6 +38,25 @@ function aliasesFor(document: DemoDocument) {
     .map((value) => value.toLocaleLowerCase());
 }
 
+const IGNORED_PATH_PATTERNS = [
+  /(?:^|\/)node_modules(?:\/|$)/i,
+  /(?:^|\/)\.git(?:\/|$)/i,
+  /(?:^|\/)\.turbo(?:\/|$)/i,
+  /(?:^|\/)\.next(?:\/|$)/i,
+  /(?:^|\/)dist(?:\/|$)/i,
+  /(?:^|\/)build(?:\/|$)/i,
+  /(?:^|\/)out(?:\/|$)/i,
+  /(?:^|\/)\.cache(?:\/|$)/i,
+  /(?:^|\/)\.vscode(?:\/|$)/i,
+  /(?:^|\/)\.gemini(?:\/|$)/i,
+  /(?:^|\/)coverage(?:\/|$)/i,
+];
+
+export function isIgnoredPath(path?: string): boolean {
+  if (!path) return false;
+  return IGNORED_PATH_PATTERNS.some((pattern) => pattern.test(path));
+}
+
 function documentId(document: DemoDocument) {
   return document.path ?? document.title;
 }
@@ -161,9 +180,10 @@ export function linkedTitles(content: string) {
 }
 
 export function linkedMentionsFor(documents: DemoDocument[], targetIdentifier: string) {
-  const resolve = resolverFor(documents);
-  const wantedId = targetId(documents, targetIdentifier);
-  const targetDoc = documents.find(
+  const filteredDocuments = documents.filter((doc) => !isIgnoredPath(doc.path));
+  const resolve = resolverFor(filteredDocuments);
+  const wantedId = targetId(filteredDocuments, targetIdentifier);
+  const targetDoc = filteredDocuments.find(
     (d) => documentId(d) === wantedId || d.path === targetIdentifier || d.title === targetIdentifier
   );
 
@@ -177,7 +197,7 @@ export function linkedMentionsFor(documents: DemoDocument[], targetIdentifier: s
   wantedSet.add(targetIdentifier);
 
   const mentions: DocumentMention[] = [];
-  for (const document of documents) {
+  for (const document of filteredDocuments) {
     for (const link of rawLinks(document.content)) {
       const resolved = resolve(link.target, document);
       if (resolved && (wantedSet.has(resolved) || wantedSet.has(normalizeTarget(resolved)))) {
@@ -193,7 +213,8 @@ export function linkedMentionsFor(documents: DemoDocument[], targetIdentifier: s
 }
 
 export function unlinkedMentionsFor(documents: DemoDocument[], targetIdentifier: string) {
-  const targetDoc = documents.find(
+  const filteredDocuments = documents.filter((doc) => !isIgnoredPath(doc.path));
+  const targetDoc = filteredDocuments.find(
     (d) => documentId(d) === targetIdentifier || d.path === targetIdentifier || d.title === targetIdentifier
   );
   const targetTitle =
@@ -207,7 +228,7 @@ export function unlinkedMentionsFor(documents: DemoDocument[], targetIdentifier:
   );
   const wantedId = targetDoc ? documentId(targetDoc) : targetIdentifier;
 
-  for (const document of documents) {
+  for (const document of filteredDocuments) {
     if (documentId(document) === wantedId) continue;
     const searchable = maskMarkdown(document.content);
     for (const match of searchable.matchAll(pattern)) {
