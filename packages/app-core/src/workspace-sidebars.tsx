@@ -1045,9 +1045,10 @@ function RightContent({
       }));
     };
 
-    const renderGroupedMentions = (groups: Array<[string, DocumentMention[]]>) => {
+    const renderGroupedMentions = (groups: Array<[string, DocumentMention[]]>, defaultExpanded: boolean = false) => {
       return groups.map(([source, mentions]) => {
-        const isExpanded = expandedGroups[`${activeTitle}::${source}`] === true;
+        const stored = expandedGroups[`${activeTitle}::${source}`];
+        const isExpanded = stored !== undefined ? stored : defaultExpanded;
         return (
           <div key={source} className="mb-0.5">
             <div className="flex items-center justify-between py-1 px-1 hover:bg-accent/40 rounded-md group select-none">
@@ -1172,7 +1173,7 @@ function RightContent({
               </span>
             </button>
             {linkedExpanded && totalLinkedCount > 0 ? (
-              renderGroupedMentions(linked)
+              renderGroupedMentions(linked, true)
             ) : null}
             {linkedExpanded && totalLinkedCount === 0 ? (
               <div className="text-[11px] text-muted-foreground px-5">
