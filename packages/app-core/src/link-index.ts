@@ -200,41 +200,22 @@ export class BacklinkIndexStore {
     return this.cacheVersion;
   }
 
-  public rebuild(documents: DemoDocument[]) {
-    this.fileMap.clear();
-    this.reverseLinked.clear();
-    const resolve = resolverFor(documents);
-
-    for (const doc of documents) {
-      const id = documentId(doc);
-      this.fileMap.set(id, doc);
-
-      for (const link of rawLinks(doc.content)) {
-        const resolved = resolve(link.target, doc);
-        if (resolved) {
-          let sourceGroup = this.reverseLinked.get(resolved);
-          if (!sourceGroup) {
-            sourceGroup = new Map();
-            this.reverseLinked.set(resolved, sourceGroup);
-          }
-          let mentions = sourceGroup.get(id);
-          if (!mentions) {
-            mentions = [];
-            sourceGroup.set(id, mentions);
-          }
-          mentions.push({
-            source: id,
-            target: resolved,
-            ...locationFor(doc.content, link.index),
-          });
-        }
-      }
+  private addMention(alias: string, sourceId: string, mention: DocumentMention) {
+    if (!alias) return;
+    let sourceGroup = this.reverseLinked.get(alias);
+    if (!sourceGroup) {
+      sourceGroup = new Map();
+      this.reverseLinked.set(alias, sourceGroup);
     }
-    this.cacheVersion += 1;
-    this.notify();
+    let mentions = sourceGroup.get(sourceId);
+    if (!mentions) {
+      mentions = [];
+      sourceGroup.set(sourceId, mentions);
+    }
+    mentions.push(mention);
   }
 
-  public updateSingleDocument(doc: DemoDocument) {
+  private updateSingleDocumentInternal(doc: DemoDocument) {
     const id = documentId(doc);
     this.fileMap.set(id, doc);
 
@@ -243,64 +224,81 @@ export class BacklinkIndexStore {
       sourceGroup.delete(id);
     }
 
-    const allDocs = [...this.fileMap.values()];
-    const resolve = resolverFor(allDocs);
+    const directory = doc.path ? normalizeTarget(doc.path).split("/").slice(0, -1).join("/") : "";
     for (const link of rawLinks(doc.content)) {
-      const resolved = resolve(link.target, doc);
-      if (resolved) {
-        let sourceGroup = this.reverseLinked.get(resolved);
-        if (!sourceGroup) {
-          sourceGroup = new Map();
-          this.reverseLinked.set(resolved, sourceGroup);
-        }
-        let mentions = sourceGroup.get(id);
-        if (!mentions) {
-          mentions = [];
-          sourceGroup.set(id, mentions);
-        }
-        mentions.push({
-          source: id,
-          target: resolved,
-          ...locationFor(doc.content, link.index),
-        });
+      const target = normalizeTarget(link.target).toLocaleLowerCase();
+      const relative = directory ? normalizeTarget(`${directory}/${target}`).toLocaleLowerCase() : target;
+      
+      const mention = {
+        source: id,
+        target: link.target,
+        ...locationFor(doc.content, link.index),
+      };
+
+      this.addMention(target, id, mention);
+      if (relative !== target) {
+        this.addMention(relative, id, mention);
       }
     }
+  }
+
+  public rebuild(documents: DemoDocument[]) {
+    this.fileMap.clear();
+    this.reverseLinked.clear();
+
+    for (const doc of documents) {
+      this.updateSingleDocumentInternal(doc);
+    }
+    this.cacheVersion += 1;
+    this.notify();
+  }
+
+  public updateSingleDocument(doc: DemoDocument) {
+    this.updateSingleDocumentInternal(doc);
     this.cacheVersion += 1;
     this.notify();
   }
 
   public getLinkedMentions(targetIdentifier: string): DocumentMention[] {
     const allDocs = [...this.fileMap.values()];
-    const wantedId = targetId(allDocs, targetIdentifier);
     const targetDoc = allDocs.find(
-      (d) => documentId(d) === wantedId || d.path === targetIdentifier || d.title === targetIdentifier
+      (d) => documentId(d) === targetIdentifier || d.path === targetIdentifier || d.title === targetIdentifier
     );
 
     const wantedSet = new Set<string>();
-    if (wantedId) wantedSet.add(wantedId);
+    wantedSet.add(normalizeTarget(targetIdentifier).toLocaleLowerCase());
+    
     if (targetDoc) {
-      wantedSet.add(documentId(targetDoc));
-      if (targetDoc.path) wantedSet.add(targetDoc.path);
-      if (targetDoc.title) wantedSet.add(targetDoc.title);
+      for (const alias of aliasesFor(targetDoc)) {
+         wantedSet.add(alias);
+      }
     }
-    wantedSet.add(targetIdentifier);
 
-    const results: DocumentMention[] = [];
+    const result: DocumentMention[] = [];
     const seen = new Set<string>();
 
-    for (const id of wantedSet) {
-      const sourceGroup = this.reverseLinked.get(id);
+    for (const alias of wantedSet) {
+      const sourceGroup = this.reverseLinked.get(alias);
       if (sourceGroup) {
-        for (const [sourcePath, mentions] of sourceGroup.entries()) {
-          const key = `${id}::${sourcePath}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            results.push(...mentions);
+        for (const [sourceId, mentions] of sourceGroup.entries()) {
+          // Exclude self-references
+          if (targetDoc && documentId(targetDoc) === sourceId) continue;
+          
+          for (const m of mentions) {
+            const key = `${m.source}:${m.line}:${m.excerpt}`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              result.push(m);
+            }
           }
         }
       }
     }
-    return results;
+
+    return result.sort((a, b) => {
+      if (a.source === b.source) return a.line - b.line;
+      return a.source.localeCompare(b.source);
+    });
   }
 
   public getUnlinkedMentions(targetIdentifier: string): DocumentMention[] {
