@@ -322,84 +322,130 @@ function EditorPathBreadcrumb({
 }: {
   path: string;
   onReveal: (path: string, file: boolean) => void;
-  onRename: (path: string, name: string) => void;
+  onRename?: (path: string, name: string) => void;
 }) {
   const segments = path.split("/").filter(Boolean);
   const fileName = segments.at(-1) ?? "";
   const fileLabel = fileName.replace(/\.[^./]+$/, "");
-  const [renaming, setRenaming] = useState(false);
+  const [isFocused, setIsFocused] = useState(false);
   const [draft, setDraft] = useState(fileLabel);
   const inputRef = useRef<HTMLInputElement>(null);
   const cancelRenameRef = useRef(false);
 
   useEffect(() => {
-    if (!renaming) return;
+    if (!isFocused) return;
     inputRef.current?.focus();
-    inputRef.current?.select();
-  }, [renaming]);
+  }, [isFocused]);
 
   const commitRename = () => {
     if (cancelRenameRef.current) {
       cancelRenameRef.current = false;
       return;
     }
-    setRenaming(false);
+    setIsFocused(false);
     const next = draft.trim();
-    if (next && next !== fileLabel) onRename(path, next);
+    if (next && next !== fileLabel) onRename?.(path, next);
     else setDraft(fileLabel);
   };
 
   return (
-    <nav
+    <m.nav
+      layout
       aria-label="File path"
       title={path}
-      className="mx-auto flex min-w-0 max-w-full items-center justify-center gap-1.5 overflow-hidden"
+      className="mx-auto flex min-w-0 max-w-full items-center justify-center overflow-hidden h-8"
+      transition={{ type: "spring", stiffness: 120, damping: 20 }}
     >
-      {segments.map((segment, index) => {
-        const currentPath = segments.slice(0, index + 1).join("/");
-        const file = index === segments.length - 1;
-        return (
-          <span key={currentPath} className="flex min-w-0 items-center gap-1.5">
-            {index ? <span className="select-none text-muted-foreground/45">/</span> : null}
-            {file && renaming ? (
-              <input
-                ref={inputRef}
-                aria-label="Rename file"
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                onBlur={commitRename}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") event.currentTarget.blur();
-                  if (event.key === "Escape") {
-                    cancelRenameRef.current = true;
-                    setDraft(fileLabel);
-                    setRenaming(false);
-                  }
-                }}
-                className="min-w-24 max-w-64 rounded-sm border bg-background px-1.5 py-0.5 text-center font-medium text-foreground outline-none focus:ring-1 focus:ring-ring [border-color:var(--layout-separator)]"
-              />
-            ) : (
-              <button
-                type="button"
-                aria-current={file ? "page" : undefined}
-                aria-label={file ? `Rename ${fileLabel}` : `Reveal ${segment}`}
-                onClick={() => {
-                  if (file) {
-                    setDraft(fileLabel);
-                    setRenaming(true);
-                  } else onReveal(currentPath, false);
-                }}
-                className={`min-w-0 truncate rounded-sm px-1.5 py-0.5 outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring ${
-                  file ? "font-medium text-foreground" : "text-muted-foreground"
-                }`}
-              >
-                {file ? fileLabel : segment}
-              </button>
-            )}
-          </span>
-        );
-      })}
-    </nav>
+      <LayoutGroup id="breadcrumb-nav-group">
+        {segments.map((segment, index) => {
+          const currentPath = segments.slice(0, index + 1).join("/");
+          const file = index === segments.length - 1;
+          return (
+            <m.span
+              layout
+              key={currentPath}
+              className="flex min-w-0 items-center"
+              transition={{ type: "spring", stiffness: 120, damping: 20 }}
+            >
+              {!file ? (
+                <AnimatePresence initial={false}>
+                  {!isFocused && (
+                    <m.span
+                      layout
+                      initial={{ opacity: 0, width: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, width: "auto", scale: 1 }}
+                      exit={{ opacity: 0, width: 0, scale: 0.8 }}
+                      transition={{ type: "spring", stiffness: 150, damping: 22 }}
+                      className="flex items-center min-w-0 overflow-hidden"
+                    >
+                      {index ? <span className="select-none text-muted-foreground/35 mx-[3px] font-normal text-xs">/</span> : null}
+                      <button
+                        type="button"
+                        aria-label={`Reveal ${segment}`}
+                        onClick={() => onReveal(currentPath, false)}
+                        className="min-w-0 truncate rounded-sm px-[3px] py-0.5 outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring text-muted-foreground"
+                      >
+                        {segment}
+                      </button>
+                    </m.span>
+                  )}
+                </AnimatePresence>
+              ) : (
+                <m.span
+                  layout
+                  className="flex items-center min-w-0"
+                  transition={{ type: "spring", stiffness: 120, damping: 20 }}
+                >
+                  {index && !isFocused ? (
+                    <m.span
+                      initial={{ opacity: 0, width: 0 }}
+                      animate={{ opacity: 1, width: "auto" }}
+                      exit={{ opacity: 0, width: 0 }}
+                      className="select-none text-muted-foreground/35 mx-[3px] font-normal text-xs"
+                    >
+                      /
+                    </m.span>
+                  ) : null}
+                  {isFocused ? (
+                    <m.input
+                      layout
+                      ref={inputRef}
+                      type="text"
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                      onBlur={commitRename}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.currentTarget.blur();
+                        if (e.key === "Escape") {
+                          cancelRenameRef.current = true;
+                          setDraft(fileLabel);
+                          setIsFocused(false);
+                        }
+                      }}
+                      className="min-w-24 max-w-64 bg-transparent border-none text-center font-medium text-foreground outline-none focus:outline-none focus:ring-0 px-[3px] py-0.5"
+                      style={{ font: "inherit" }}
+                    />
+                  ) : (
+                    <m.button
+                      layout
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsFocused(true);
+                      }}
+                      className="min-w-0 truncate rounded-sm px-[3px] py-0.5 outline-none font-medium text-foreground cursor-pointer"
+                      transition={{ type: "spring", stiffness: 120, damping: 20 }}
+                    >
+                      {fileLabel}
+                    </m.button>
+                  )}
+                </m.span>
+              )}
+            </m.span>
+          );
+        })}
+      </LayoutGroup>
+    </m.nav>
   );
 }
 
@@ -580,6 +626,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const [pdfExportDocument, setPdfExportDocument] = useState<DemoDocument | null>(null);
   const [pdfExportOpen, setPdfExportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sidebarSelectedPath, setSidebarSelectedPath] = useState<string | undefined>();
   const [bookmarks, setBookmarks] = useState<BookmarkItem[]>(() => loadBookmarks());
   const [bookmarkGroups, setBookmarkGroups] = useState<string[]>(() => loadBookmarkGroups());
   const [addBookmarkDialogOpen, setAddBookmarkDialogOpen] = useState(false);
@@ -661,6 +708,31 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     activeLeaf?.view === "editor"
       ? tabs.find((tab) => tab.id === activeLeaf.activeTabId)
       : undefined;
+
+  const activeFilePath =
+    visibleActiveTab?.document?.path ??
+    visibleActiveTab?.pdf?.path ??
+    visibleActiveTab?.preview?.path;
+
+  useEffect(() => {
+    if (activeFilePath) {
+      setSidebarSelectedPath(activeFilePath);
+      const separator = activeFilePath.lastIndexOf("/");
+      if (separator > 0) {
+        const folder = activeFilePath.slice(0, separator);
+        const parts = folder.split("/").filter(Boolean);
+        setExpandedFolders((current) => {
+          const next = new Set(current);
+          for (let index = 0; index < parts.length; index++) {
+            next.add(parts.slice(0, index + 1).join("/"));
+          }
+          return [...next].sort();
+        });
+      }
+    } else {
+      setSidebarSelectedPath(undefined);
+    }
+  }, [activeFilePath]);
   const documents = useMemo(() => {
     const library = vault ? vaultDocuments : DOCUMENT_LIBRARY;
     const byPath = new Map(library.map((document) => [document.path ?? document.title, document]));
@@ -2361,6 +2433,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       return [...next].sort();
     });
     setLeftSidebarPane("files");
+    setSidebarSelectedPath(folder);
   };
 
   const commandsFor = (tab: WorkspaceTab, leafId = activeLeafId): FluxTabCommands => {
@@ -2475,6 +2548,16 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     return load;
   };
 
+  const revealSidebarPath = (targetPath?: string) => {
+    if (!targetPath) return;
+    setSidebarSelectedPath(targetPath);
+    const parts = targetPath.split("/").filter(Boolean).slice(0, -1);
+    if (parts.length === 0) return;
+    const ancestors = parts.map((_, index) => parts.slice(0, index + 1).join("/"));
+    setExpandedFolders((current) => [...new Set([...current, ...ancestors])].sort());
+    for (const path of ancestors) void loadFolderChildren(path);
+  };
+
   const activateLeafTab = (leafId: number, tabId: number) => {
     navigationIntentRef.current += 1;
     if (vault) void flushPendingSaves(vault.id);
@@ -2489,6 +2572,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     setActiveLeafId(leafId);
     setActiveTabId(tabId);
     if (tab?.deferred) void hydrateDeferredTab(tab);
+    revealSidebarPath(tab?.document?.path ?? tab?.pdf?.path ?? tab?.preview?.path);
   };
 
   const openGraphTab = (leafId = activeLeafId, graphRootPath?: string) => {
@@ -2797,6 +2881,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
         }))
       );
       if (existing.deferred) void hydrateDeferredTab(existing);
+      revealSidebarPath(existing.document?.path ?? existing.pdf?.path ?? existing.preview?.path);
       return;
     }
 
@@ -3294,11 +3379,8 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             leftSidebar={
               <WorkspaceLeftSidebar
                 activeTitle={visibleActiveTab?.title ?? ""}
-                activePath={
-                  visibleActiveTab?.document?.path ??
-                  visibleActiveTab?.pdf?.path ??
-                  visibleActiveTab?.preview?.path
-                }
+                activePath={sidebarSelectedPath}
+                onSelectPath={setSidebarSelectedPath}
                 pane={leftSidebarPane}
                 documents={documents}
                 onOpenDocument={(path) => void openDocument(path)}

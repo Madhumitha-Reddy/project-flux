@@ -237,7 +237,7 @@ function FileRow({
           }}
           className={`flex w-full items-center gap-2 rounded-md py-1.5 pr-2 text-left text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
             selected
-              ? "bg-accent text-accent-foreground"
+              ? "bg-sidebar-selected text-sidebar-accent-foreground font-medium"
               : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
           }`}
           style={{ paddingLeft: 8 + depth * 16 }}
@@ -892,6 +892,7 @@ function LeftSidebar({
   searchVault,
   searchQuery,
   onSearchQueryChange,
+  onSelectPath,
 }: {
   activeTitle: string;
   pane: LeftPane;
@@ -919,6 +920,7 @@ function LeftSidebar({
   searchVault?: (query: string, offset?: number, matchCase?: boolean) => Promise<SearchResult[]>;
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
+  onSelectPath?: (path: string) => void;
 }) {
   return (
     <section
@@ -944,6 +946,7 @@ function LeftSidebar({
               expandedFolders={expandedFolders}
               onExpandedFoldersChange={onExpandedFoldersChange}
               onExpandFolder={onExpandFolder}
+              onSelectPath={onSelectPath}
             />
           ) : (
             <FileExplorer
@@ -1607,6 +1610,7 @@ export function WorkspaceLeftSidebar({
   searchVault,
   searchQuery,
   onSearchQueryChange,
+  onSelectPath,
 }: {
   activeTitle: string;
   pane: LeftPane;
@@ -1634,6 +1638,7 @@ export function WorkspaceLeftSidebar({
   searchVault?: (query: string, offset?: number, matchCase?: boolean) => Promise<SearchResult[]>;
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
+  onSelectPath?: (path: string) => void;
 }) {
   return (
     <LeftSidebar
@@ -1663,6 +1668,7 @@ export function WorkspaceLeftSidebar({
       searchVault={searchVault}
       searchQuery={searchQuery}
       onSearchQueryChange={onSearchQueryChange}
+      onSelectPath={onSelectPath}
     />
   );
 }
