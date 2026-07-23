@@ -11,6 +11,8 @@ export interface WorkspaceTab {
   showBacklinks: boolean;
   bookmarked: boolean;
   findRequest: number;
+  history: string[];
+  historyIndex: number;
 }
 
 export const createWorkspaceTab = (
@@ -24,4 +26,6 @@ export const createWorkspaceTab = (
   showBacklinks: false,
   bookmarked: false,
   findRequest: 0,
+  history: document ? [document.path ?? document.title] : [],
+  historyIndex: document ? 0 : -1,
 });

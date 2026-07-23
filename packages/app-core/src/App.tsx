@@ -40,7 +40,7 @@ import {
   type DemoDocument,
 } from "./markdown-editor";
 import { setFrontmatterProperty } from "./frontmatter";
-import { buildLinkIndex } from "./link-index";
+import { isIgnoredPath, globalBacklinkStore } from "./link-index";
 import {
   WorkspaceLeftSidebar,
   WorkspaceRibbon,
@@ -599,8 +599,18 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     const byPath = new Map(library.map((document) => [document.path ?? document.title, document]));
     for (const tab of tabs)
       if (tab.document) byPath.set(tab.document.path ?? tab.document.title, tab.document);
+      
+    // Include all non-ignored markdown files as stubs for autocomplete and linking
+    if (vault) {
+      for (const entry of fileEntries) {
+        if ((entry.kind === "markdown" || entry.kind === "text") && !isIgnoredPath(entry.path) && !byPath.has(entry.path)) {
+          byPath.set(entry.path, { path: entry.path, title: titleFromPath(entry.path), content: "", contentHash: "" });
+        }
+      }
+    }
+    
     return [...byPath.values()];
-  }, [tabs, vault, vaultDocuments]);
+  }, [tabs, vault, vaultDocuments, fileEntries]);
   const selectableVaults = useMemo(() => {
     const byPath = new Map<string, { key: string; name: string; path: string }>();
     for (const location of availableVaults) {
@@ -933,9 +943,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     if (!runtime.client) return [];
     const previousDocuments = new Map(savedDocumentsRef.current);
     const markdownEntries = entries.filter(
-      (entry) =>
-        (entry.kind === "markdown" || entry.kind === "text") &&
-        savedDocumentsRef.current.has(entry.path)
+      (entry) => (entry.kind === "markdown" || entry.kind === "text") && savedDocumentsRef.current.has(entry.path)
     );
     const loaded = await Promise.all(
       markdownEntries.map(async (entry) => {
@@ -991,6 +999,42 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       );
     }
     setVaultDocuments(resolved);
+    // Update the index with the synchronously loaded files, without clearing it
+    for (const doc of resolved) {
+      globalBacklinkStore.updateSingleDocument(doc);
+    }
+    
+    // Background incremental indexing for ALL remaining markdown files
+    // Ensures instant startup while building full-vault backlinks without blocking UI
+    const backgroundEntries = entries.filter(
+      (entry) => (entry.kind === "markdown" || entry.kind === "text") && !savedDocumentsRef.current.has(entry.path)
+    );
+    setTimeout(async () => {
+      let index = 0;
+      const CHUNK = 50;
+      while (index < backgroundEntries.length) {
+        const chunk = backgroundEntries.slice(index, index + CHUNK);
+        const chunkLoaded = await Promise.all(
+          chunk.map(async (entry) => {
+            try {
+              const file = await runtime.client!.readFile(vaultId, entry.path);
+              return {
+                title: titleFromPath(file.path),
+                path: file.path,
+                content: file.content,
+                contentHash: file.contentHash,
+              } satisfies DemoDocument;
+            } catch { return null; }
+          })
+        );
+        for (const doc of chunkLoaded) {
+          if (doc) globalBacklinkStore.updateSingleDocument(doc);
+        }
+        index += CHUNK;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }, 1000);
+
     return resolved;
   };
 
@@ -1087,7 +1131,11 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       nextLeafIdRef.current = maxWorkspaceNodeId(nextRoot) + 1;
     }
     if (persisted?.leftSidebarPane) setLeftSidebarPane(persisted.leftSidebarPane);
-    if (persisted?.rightSidebarPane) setRightSidebarPane(persisted.rightSidebarPane);
+    if (persisted?.rightSidebarPane) {
+      setRightSidebarPane(persisted.rightSidebarPane === "outline" ? "backlinks" : persisted.rightSidebarPane);
+    } else {
+      setRightSidebarPane("backlinks");
+    }
     if (persisted?.layout) setLayoutState(persisted.layout);
     if (persisted?.expandedFolders) setExpandedFolders(persisted.expandedFolders);
     setSessionVaultId(info.id);
@@ -1697,7 +1745,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
         showBacklinks={tab.showBacklinks}
         findRequest={tab.findRequest}
         onDropDocument={openDocument}
-        onOpenDocument={openDocument}
+        onOpenDocument={(identifier, inPlace) => openDocument(identifier, inPlace ? tab.id : undefined)}
         documents={documents}
       />
     );
@@ -1910,6 +1958,20 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
           tab.title
         )
       }
+      canGoBack={tab.history && tab.historyIndex > 0}
+      canGoForward={tab.history && tab.historyIndex < tab.history.length - 1}
+      onGoBack={() => {
+        if (!tab.history || tab.historyIndex <= 0) return;
+        const newIndex = tab.historyIndex - 1;
+        updateTab(tab.id, (current) => ({ ...current, historyIndex: newIndex }));
+        void openDocument(tab.history[newIndex], tab.id, true);
+      }}
+      onGoForward={() => {
+        if (!tab.history || tab.historyIndex >= tab.history.length - 1) return;
+        const newIndex = tab.historyIndex + 1;
+        updateTab(tab.id, (current) => ({ ...current, historyIndex: newIndex }));
+        void openDocument(tab.history[newIndex], tab.id, true);
+      }}
       headerAction={
         tab.document ? (
           <div className="flex items-center gap-0.5">
@@ -1944,9 +2006,12 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             showBacklinks={tab.showBacklinks}
             bookmarked={isTabBookmarked(tab)}
             onModeChange={(mode) => updateTab(tab.id, (current) => ({ ...current, mode }))}
-            onBacklinksChange={(showBacklinks) =>
-              updateTab(tab.id, (current) => ({ ...current, showBacklinks }))
-            }
+            onBacklinksChange={(showBacklinks) => {
+              updateTab(tab.id, (current) => ({ ...current, showBacklinks }));
+              if (showBacklinks) {
+                setRightSidebarPane("backlinks");
+              }
+            }}
             onBookmarkChange={() =>
               handleOpenAddBookmark({
                 title: tab.title,
@@ -2033,13 +2098,30 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     </FluxEditorPane>
   );
 
-  const backlinksCount = visibleActiveTab?.document
-    ? (buildLinkIndex(documents).backlinks.get(
-        visibleActiveTab.document.path ?? visibleActiveTab.document.title
-      )?.size ?? 0)
-    : 0;
+  const [backlinksCount, setBacklinksCount] = useState(0);
 
-  const openDocument = async (identifier: string) => {
+  useEffect(() => {
+    const updateCount = () => {
+      if (visibleActiveTab?.document) {
+        const identifier = visibleActiveTab.document.path ?? visibleActiveTab.document.title;
+        const mentions = globalBacklinkStore.getLinkedMentions(identifier);
+        
+        // Deduplicate by source document to count unique backlinking files, not total mentions
+        const uniqueSources = new Set(mentions.map((m) => m.source));
+        setBacklinksCount(uniqueSources.size);
+      } else {
+        setBacklinksCount(0);
+      }
+    };
+    
+    updateCount();
+    const unsubscribe = globalBacklinkStore.subscribe(updateCount);
+    return () => {
+      unsubscribe();
+    };
+  }, [visibleActiveTab?.document]);
+
+  const openDocument = async (identifier: string, targetTabId?: number, historyNavigation = false) => {
     const exactEntry = vault ? fileEntries.find((entry) => entry.path === identifier) : undefined;
     const titleMatches = vault
       ? fileEntries.filter(
@@ -2052,13 +2134,16 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
         vaultDocuments.find((document) => document.title === identifier)?.path ??
         (/\.(md|markdown)$/i.test(identifier) ? identifier : undefined))
       : undefined;
-    const existing = tabs.find((tab) =>
-      requestedPath
-        ? tab.document?.path === requestedPath ||
-          tab.pdf?.path === requestedPath ||
-          tab.preview?.path === requestedPath
-        : tab.document?.title === identifier
-    );
+    const existing =
+      targetTabId === undefined
+        ? tabs.find((tab) =>
+            requestedPath
+              ? tab.document?.path === requestedPath ||
+                tab.pdf?.path === requestedPath ||
+                tab.preview?.path === requestedPath
+              : tab.document?.title === identifier
+          )
+        : undefined;
     if (existing) {
       setActiveTabId(existing.id);
       setWorkspaceRoot((root) =>
@@ -2089,6 +2174,41 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     }
 
     const placeTab = (create: (id: number) => WorkspaceTab) => {
+      if (targetTabId !== undefined) {
+        setTabs((current) =>
+          current.map((tab) => {
+            if (tab.id === targetTabId) {
+              const replacement = create(targetTabId);
+              let newHistory = tab.history || [];
+              let newIndex = tab.historyIndex ?? -1;
+              if (!historyNavigation) {
+                newHistory = newHistory.slice(0, newIndex + 1);
+                const newPath =
+                  replacement.document?.path ??
+                  replacement.pdf?.path ??
+                  replacement.preview?.path ??
+                  replacement.title;
+                if (newHistory[newHistory.length - 1] !== newPath) {
+                  newHistory.push(newPath);
+                }
+                newIndex = newHistory.length - 1;
+              }
+              return {
+                ...tab,
+                title: replacement.title,
+                document: replacement.document,
+                pdf: replacement.pdf,
+                preview: replacement.preview,
+                history: historyNavigation ? tab.history : newHistory,
+                historyIndex: historyNavigation ? tab.historyIndex : newIndex,
+              };
+            }
+            return tab;
+          })
+        );
+        return;
+      }
+
       const leaf = findWorkspaceLeaf(workspaceRoot, activeLeafId);
       const emptyTab =
         leaf?.tabIds.length === 1
