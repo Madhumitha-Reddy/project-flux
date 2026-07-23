@@ -98,6 +98,45 @@ type SaveResult struct {
 	ModifiedAt  time.Time `json:"modifiedAt"`
 }
 
+type VaultPlanOperation struct {
+	Action       string `json:"action"`
+	Path         string `json:"path"`
+	Content      string `json:"content"`
+	ExpectedHash string `json:"expectedHash,omitempty"`
+}
+
+type VaultPlanResult struct {
+	Files []SaveResult `json:"files"`
+}
+
+type SearchResult struct {
+	Path    string `json:"path"`
+	Title   string `json:"title"`
+	Excerpt string `json:"excerpt"`
+}
+
+type DocumentReference struct {
+	Source  string `json:"source"`
+	Line    int    `json:"line"`
+	Excerpt string `json:"excerpt"`
+}
+
+type DocumentReferences struct {
+	Linked   []DocumentReference `json:"linked"`
+	Unlinked []DocumentReference `json:"unlinked"`
+	Outgoing []string            `json:"outgoing"`
+}
+
+type FacetCount struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+type VaultFacets struct {
+	Tags       []FacetCount `json:"tags"`
+	Properties []FacetCount `json:"properties"`
+}
+
 type TrashEntry struct {
 	ID           string    `json:"id"`
 	OriginalPath string    `json:"originalPath"`

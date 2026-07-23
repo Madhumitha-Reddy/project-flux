@@ -1,4 +1,14 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type DragEvent,
+} from "react";
 import { AnimatePresence, LazyMotion, LayoutGroup, MotionConfig, domAnimation } from "motion/react";
 import * as m from "motion/react-m";
 import { FluxLayout } from "@flux/shared-ui/components/flux-layout";
@@ -14,9 +24,13 @@ import { ModeToggle } from "@flux/shared-ui/components/mode-toggle";
 import { FluxStatusBar } from "@flux/shared-ui/components/status-bar";
 import { TooltipProvider } from "@flux/shared-ui/components/tooltip";
 import { Toaster, toast } from "@flux/shared-ui/components/sonner";
+import { VaultPluginHost, type PluginBundle } from "@flux/plugin-runtime";
+import type { PluginCapability } from "@flux/plugin-sdk";
 import type {
   FileEntry,
   FluxClient,
+  MarketplacePlugin,
+  PluginCatalogEntry,
   RecentVault,
   ServerStatus,
   TrashEntry,
@@ -24,6 +38,7 @@ import type {
   VaultInfo,
   VaultLocation,
   VaultGraph,
+  VaultPlugin,
 } from "@flux/bridge-contract";
 import {
   FluxEditorPane,
@@ -137,6 +152,10 @@ function lifecycleFromVault(info: VaultInfo): VaultLifecycleState {
     return state;
   }
   return state === "ready" ? "active" : "degraded";
+}
+
+function sandboxedPluginDocument(html: string) {
+  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:">${html}`;
 }
 
 function restoreWorkspaceRoot(
@@ -303,8 +322,7 @@ function EditorPathBreadcrumb({
                   if (file) {
                     setDraft(fileLabel);
                     setRenaming(true);
-                  }
-                  else onReveal(currentPath, false);
+                  } else onReveal(currentPath, false);
                 }}
                 className={`min-w-0 truncate rounded-sm px-1.5 py-0.5 outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring ${
                   file ? "font-medium text-foreground" : "text-muted-foreground"
@@ -443,16 +461,39 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   const [vaultGraph, setVaultGraph] = useState<VaultGraph | null>(null);
   const [vaultDocuments, setVaultDocuments] = useState<DemoDocument[]>([]);
   const [vaultPickerOpen, setVaultPickerOpen] = useState(false);
+  const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
+  const [pluginCatalog, setPluginCatalog] = useState<PluginCatalogEntry[]>([]);
+  const [marketplacePlugins, setMarketplacePlugins] = useState<MarketplacePlugin[]>([]);
+  const [marketplaceError, setMarketplaceError] = useState("");
+  const [pluginSection, setPluginSection] = useState<"marketplace" | "installed">("marketplace");
+  const [pluginSettings, setPluginSettings] = useState<Record<string, Record<string, unknown>>>({});
+  const [vaultPlugins, setVaultPlugins] = useState<VaultPlugin[]>([]);
+  const [pluginBusy, setPluginBusy] = useState(false);
+  const [pluginRuntimeRevision, setPluginRuntimeRevision] = useState(0);
+  const [pluginView, setPluginView] = useState<{ title: string; html: string }>();
+  const [pluginQuery, setPluginQuery] = useState("");
   const [recentVaults, setRecentVaults] = useState<RecentVault[]>([]);
   const [availableVaults, setAvailableVaults] = useState<VaultLocation[]>([]);
+  const [vaultQuery, setVaultQuery] = useState("");
   const [renameRequest, setRenameRequest] = useState<{ path: string; value: string }>();
   const [trashOpen, setTrashOpen] = useState(false);
   const [trashEntries, setTrashEntries] = useState<TrashEntry[]>([]);
+  const [trashQuery, setTrashQuery] = useState("");
   const [permanentDeleteRequest, setPermanentDeleteRequest] = useState<TrashEntry>();
+  const [emptyTrashRequest, setEmptyTrashRequest] = useState(false);
   const [pdfExportDocument, setPdfExportDocument] = useState<DemoDocument | null>(null);
   const [pdfExportOpen, setPdfExportOpen] = useState(false);
   const [leftSidebarPane, setLeftSidebarPane] = useState<LeftPane>("files");
   const [rightSidebarPane, setRightSidebarPane] = useState<RightPane>("backlinks");
+  const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
+  const [sidebarIndexRevision, setSidebarIndexRevision] = useState(0);
+  const [headingReveal, setHeadingReveal] = useState<{
+    path: string;
+    heading: string;
+    line: number;
+    request: number;
+    absolute?: boolean;
+  }>();
   const [layoutState, setLayoutState] = useState<FluxLayoutState>();
   const [expandedFolders, setExpandedFolders] = useState<string[]>([]);
   const [nextTabId, setNextTabId] = useState(2);
@@ -472,10 +513,12 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
   const savedDocumentsRef = useRef(new Map<string, DemoDocument>());
   const tabsRef = useRef(tabs);
   const fileEntriesRef = useRef<FileEntry[]>([]);
+  const loadedFoldersRef = useRef(new Set<string>());
   const vaultFileVersionsRef = useRef(new Map<string, string>());
   const saveTimersRef = useRef(new Map<string, number>());
   const saveChainsRef = useRef(new Map<string, Promise<void>>());
   const indexingToastVaultRef = useRef<string | null>(null);
+  const pluginHostRef = useRef<VaultPluginHost | null>(null);
   const lastIndexingProgressRef = useRef<IndexingProgress | null>(null);
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeLeaf = findWorkspaceLeaf(workspaceRoot, activeLeafId);
@@ -510,6 +553,40 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     }
     return [...byPath.values()];
   }, [availableVaults, recentVaults]);
+  const filteredSelectableVaults = useMemo(() => {
+    const query = vaultQuery.trim().toLocaleLowerCase();
+    return query
+      ? selectableVaults.filter(({ name, path }) =>
+          `${name}\n${path}`.toLocaleLowerCase().includes(query)
+        )
+      : selectableVaults;
+  }, [selectableVaults, vaultQuery]);
+  const filteredMarketplacePlugins = useMemo(() => {
+    const query = pluginQuery.trim().toLocaleLowerCase();
+    return query
+      ? marketplacePlugins.filter((plugin) =>
+          `${plugin.manifest.name}\n${plugin.manifest.description}\n${plugin.publisher}`
+            .toLocaleLowerCase()
+            .includes(query)
+        )
+      : marketplacePlugins;
+  }, [marketplacePlugins, pluginQuery]);
+  const filteredPluginCatalog = useMemo(() => {
+    const query = pluginQuery.trim().toLocaleLowerCase();
+    return query
+      ? pluginCatalog.filter((entry) =>
+          `${entry.manifest.name}\n${entry.manifest.description}\n${entry.manifest.id}`
+            .toLocaleLowerCase()
+            .includes(query)
+        )
+      : pluginCatalog;
+  }, [pluginCatalog, pluginQuery]);
+  const filteredTrashEntries = useMemo(() => {
+    const query = trashQuery.trim().toLocaleLowerCase();
+    return query
+      ? trashEntries.filter((entry) => entry.originalPath.toLocaleLowerCase().includes(query))
+      : trashEntries;
+  }, [trashEntries, trashQuery]);
   const leftEdgeLeafIds = useMemo(
     () => new Set(workspaceEdgeLeafIds(workspaceRoot, "left")),
     [workspaceRoot]
@@ -518,6 +595,29 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     () => new Set(workspaceEdgeLeafIds(workspaceRoot, "right")),
     [workspaceRoot]
   );
+  const searchVaultIndex = useCallback(
+    (query: string, offset = 0, matchCase = false) => {
+      void sidebarIndexRevision;
+      if (!runtime.client || !vault) return Promise.resolve([]);
+      return runtime.client.searchVault(vault.id, query, 100, offset, matchCase);
+    },
+    [runtime.client, sidebarIndexRevision, vault]
+  );
+  const loadDocumentReferences = useCallback(
+    (path: string) => {
+      void sidebarIndexRevision;
+      if (!runtime.client || !vault) {
+        return Promise.resolve({ linked: [], unlinked: [], outgoing: [] });
+      }
+      return runtime.client.getDocumentReferences(vault.id, path);
+    },
+    [runtime.client, sidebarIndexRevision, vault]
+  );
+  const loadVaultFacets = useCallback(() => {
+    void sidebarIndexRevision;
+    if (!runtime.client || !vault) return Promise.resolve({ tags: [], properties: [] });
+    return runtime.client.getVaultFacets(vault.id);
+  }, [runtime.client, sidebarIndexRevision, vault]);
 
   useEffect(() => {
     tabsRef.current = tabs;
@@ -737,12 +837,150 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     setActiveLeafId(1);
   };
 
+  const fetchFileChildren = async (vaultId: string, parent: string) => {
+    const entries: FileEntry[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await runtime.client!.listFileChildren(vaultId, parent, cursor);
+      entries.push(...page.entries);
+      cursor = page.nextCursor || undefined;
+    } while (cursor);
+    return entries;
+  };
+
   const refreshFiles = async (vaultId = vault?.id) => {
     if (!runtime.client || !vaultId) return [];
-    const entries = await runtime.client.listFiles(vaultId);
+    loadedFoldersRef.current.clear();
+    const entries = await fetchFileChildren(vaultId, "");
     fileEntriesRef.current = entries;
     setFileEntries(entries);
     return entries;
+  };
+
+  const loadFolderChildren = async (parent: string) => {
+    if (!runtime.client || !vault || loadedFoldersRef.current.has(parent)) return;
+    const children = await fetchFileChildren(vault.id, parent);
+    loadedFoldersRef.current.add(parent);
+    const byPath = new Map(fileEntriesRef.current.map((entry) => [entry.path, entry]));
+    for (const entry of children) byPath.set(entry.path, entry);
+    const entries = [...byPath.values()].sort((left, right) => left.path.localeCompare(right.path));
+    fileEntriesRef.current = entries;
+    setFileEntries(entries);
+  };
+
+  const refreshPlugins = async () => {
+    if (!runtime.client) return;
+    const [catalog, enabled] = await Promise.all([
+      runtime.client.listPlugins(),
+      vault ? runtime.client.listVaultPlugins(vault.id) : Promise.resolve([]),
+    ]);
+    setPluginCatalog(catalog);
+    setVaultPlugins(enabled);
+    if (vault) {
+      const settings = await Promise.all(
+        catalog
+          .filter((entry) => entry.active && entry.manifest.contributes?.settings?.length)
+          .map(
+            async (entry) =>
+              [
+                entry.manifest.id,
+                await runtime.client!.getPluginSettings(vault.id, entry.manifest.id),
+              ] as const
+          )
+      );
+      setPluginSettings(Object.fromEntries(settings));
+    } else {
+      setPluginSettings({});
+    }
+    try {
+      const marketplace = await runtime.client.getMarketplace();
+      setMarketplacePlugins(marketplace.plugins);
+      setMarketplaceError("");
+    } catch (error) {
+      setMarketplacePlugins([]);
+      setMarketplaceError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const openPluginManager = () => {
+    setPluginManagerOpen(true);
+    void refreshPlugins().catch((error) =>
+      toast.error("Could not load plugins", {
+        description: error instanceof Error ? error.message : String(error),
+      })
+    );
+  };
+
+  const installPlugin = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !runtime.client) return;
+    setPluginBusy(true);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+      const sha256 = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      const installed = await runtime.client.installPlugin(bytes, sha256);
+      toast.success(`${installed.manifest.name} staged`, {
+        description: "Review permissions, then activate it.",
+      });
+      await refreshPlugins();
+    } catch (error) {
+      toast.error("Plugin install failed", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setPluginBusy(false);
+    }
+  };
+
+  const installMarketplacePlugin = async (plugin: MarketplacePlugin) => {
+    if (!runtime.client) return;
+    setPluginBusy(true);
+    try {
+      await runtime.client.installMarketplacePlugin(plugin.manifest.id);
+      await refreshPlugins();
+      setPluginSection("installed");
+      toast.success(`${plugin.manifest.name} staged`, {
+        description: "Review permissions, then activate it.",
+      });
+    } catch (error) {
+      toast.error("Marketplace install failed", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setPluginBusy(false);
+    }
+  };
+
+  const savePluginSetting = async (pluginId: string, settingId: string, value: unknown) => {
+    if (!runtime.client || !vault) return;
+    const values = { ...(pluginSettings[pluginId] ?? {}), [settingId]: value };
+    setPluginSettings((current) => ({ ...current, [pluginId]: values }));
+    try {
+      await runtime.client.putPluginSettings(vault.id, pluginId, values);
+      setPluginRuntimeRevision((current) => current + 1);
+    } catch (error) {
+      toast.error("Setting was not saved", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+      await refreshPlugins();
+    }
+  };
+
+  const updatePlugin = async (operation: () => Promise<void>) => {
+    setPluginBusy(true);
+    try {
+      await operation();
+      await refreshPlugins();
+      setPluginRuntimeRevision((current) => current + 1);
+    } catch (error) {
+      toast.error("Plugin action failed", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setPluginBusy(false);
+    }
   };
 
   const refreshVaultGraph = async (vaultId = vault?.id) => {
@@ -830,15 +1068,29 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     setLayoutState(undefined);
     savedDocumentsRef.current.clear();
     vaultFileVersionsRef.current.clear();
-    const entries = await refreshFiles(info.id);
+    let entries = await refreshFiles(info.id);
     void refreshVaultGraph(info.id).catch(() => undefined);
     const persisted = await statePersistence.loadWorkspaceSession(windowIdRef.current, info.id);
+    if (persisted?.expandedFolders?.length) {
+      const restoredChildren = (
+        await Promise.all(
+          persisted.expandedFolders.map((parent) => fetchFileChildren(info.id, parent))
+        )
+      ).flat();
+      for (const parent of persisted.expandedFolders) loadedFoldersRef.current.add(parent);
+      entries = [
+        ...new Map([...entries, ...restoredChildren].map((entry) => [entry.path, entry])).values(),
+      ];
+      fileEntriesRef.current = entries;
+      setFileEntries(entries);
+    }
     const entryByPath = new Map(entries.map((entry) => [entry.path, entry]));
     const requestedTabs = persisted?.tabs ?? [];
     const restored = await Promise.all(
       requestedTabs.map(async ({ id, path, mode, pinned }, index) => {
         try {
-          const entry = entryByPath.get(path);
+          let entry = entryByPath.get(path);
+          if (!entry) entry = (await runtime.client!.getFileMetadata(info.id, path)) ?? undefined;
           // Workspace state may outlive a format-policy change or an external delete.
           // Only restore files that are still part of the Obsidian-compatible vault view.
           if (!entry || entry.kind === "directory") return null;
@@ -992,7 +1244,10 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     let active = true;
     let applying = Promise.resolve();
     const reconcile = async () => {
-      const entries = await runtime.client!.listFiles(vault.id);
+      const parents = ["", ...loadedFoldersRef.current];
+      const entries = (
+        await Promise.all(parents.map((parent) => fetchFileChildren(vault.id, parent)))
+      ).flat();
       if (!active) return;
       fileEntriesRef.current = entries;
       setFileEntries(entries);
@@ -1039,6 +1294,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       vault.id,
       (change) => {
         if (!active) return;
+        setSidebarIndexRevision(change.revision);
         applying = applying.then(() => applyChange(change)).catch(() => reconcile());
       },
       () => {
@@ -1055,14 +1311,57 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
 
   useEffect(() => {
     if (!runtime.client || !vault) return;
+    let disposed = false;
+    const host = new VaultPluginHost({
+      vaultId: vault.id,
+      capabilityHandler: (pluginId, capability, input) =>
+        runtime.client!.invokePluginCapability(vault.id, pluginId, capability, input),
+      onDisabled: ({ pluginId, reason }) => {
+        void runtime.client!.disableVaultPlugin(vault.id, pluginId);
+        toast.error(`${pluginId} disabled`, { description: reason });
+      },
+    });
+    pluginHostRef.current?.dispose();
+    pluginHostRef.current = host;
+    void runtime.client
+      .listPluginBundles(vault.id)
+      .then(async (bundles) => {
+        for (const bundle of bundles) {
+          if (disposed) return;
+          try {
+            await host.activate({
+              ...bundle,
+              manifest: bundle.manifest as PluginBundle["manifest"],
+              grantedCapabilities: bundle.grantedCapabilities as PluginCapability[],
+            });
+          } catch (error) {
+            toast.error(`${bundle.manifest.name} failed to start`, {
+              description: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      })
+      .catch((error) =>
+        toast.error("Plugins unavailable", {
+          description: error instanceof Error ? error.message : String(error),
+        })
+      );
+    return () => {
+      disposed = true;
+      host.dispose();
+      if (pluginHostRef.current === host) pluginHostRef.current = null;
+    };
+  }, [pluginRuntimeRevision, runtime.client, vault]);
+
+  useEffect(() => {
+    if (!runtime.client || !vault) return;
     let active = true;
     let timer: number | undefined;
 
     const refreshLifecycle = async () => {
       try {
-        const server = await runtime.client!.getStatus();
-        if (!active || server.openVault?.id !== vault.id) return;
-        const info = server.openVault as IndexedVaultInfo;
+        const info = (await runtime.client!.getVaultInfo(vault.id)) as IndexedVaultInfo;
+        if (!active) return;
         const nextLifecycle = info.indexing ? "indexing" : lifecycleFromVault(info);
         setLifecycle(nextLifecycle, info.indexing ?? null);
         if (
@@ -1157,6 +1456,17 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     } catch (error) {
       setLifecycle(previousLifecycle, previousProgress);
       setStatus(error instanceof Error ? error.message : "Vault operation failed");
+    }
+  };
+
+  const forgetRegisteredVault = async (vaultId: string) => {
+    if (!runtime.client) return;
+    try {
+      await runtime.client.forgetVault(vaultId);
+      setRecentVaults((current) => current.filter((item) => item.vaultId !== vaultId));
+      toast.success("Vault removed from recent list");
+    } catch (error) {
+      toast.error("Could not forget vault", { description: errorMessage(error) });
     }
   };
 
@@ -1464,6 +1774,26 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     }
   };
 
+  const emptyTrash = async () => {
+    if (!runtime.client || !vault || !trashEntries.length) return;
+    try {
+      await runWithToast(
+        Promise.all(
+          trashEntries.map((entry) => runtime.client!.permanentlyDelete(vault.id, entry.id))
+        ),
+        {
+          loading: `Deleting ${trashEntries.length} trash items…`,
+          success: "Trash emptied",
+          error: "Could not empty trash",
+        }
+      );
+      setTrashEntries([]);
+      setEmptyTrashRequest(false);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not empty trash");
+    }
+  };
+
   const createFolder = async (parent: string, requestedName: string) => {
     if (!runtime.client || !vault) return;
     const name = requestedName.trim();
@@ -1518,6 +1848,9 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
         }}
         showBacklinks={tab.showBacklinks}
         findRequest={tab.findRequest}
+        revealRequest={
+          headingReveal && headingReveal.path === tab.document.path ? headingReveal : undefined
+        }
         onDropDocument={openDocument}
         onOpenDocument={openDocument}
         documents={documents}
@@ -2022,21 +2355,6 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     );
   };
 
-  const updateProperty = (key: string, value: string) => {
-    if (!activeTab?.document) return;
-    updateTab(activeTab.id, (current) =>
-      current.document
-        ? {
-            ...current,
-            document: {
-              ...current.document,
-              content: setFrontmatterProperty(current.document.content, key, value),
-            },
-          }
-        : current
-    );
-  };
-
   const popOutTab = (tab: WorkspaceTab) => {
     const url = new URL(window.location.href);
     url.searchParams.set("popout", tab.title);
@@ -2064,22 +2382,18 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
           setAvailableVaults(available);
           const server = await getBootstrapStatus(runtime.client);
           if (!active) return;
-          if (server.openVault) {
-            await loadVault(server.openVault);
-          } else {
-            const lastPath = appBootstrap.lastVaultPath;
-            if (lastPath) {
-              try {
-                await loadVault(await runtime.client.openVault({ path: lastPath }));
-                return;
-              } catch {
-                await statePersistence.forgetLastVault();
-              }
+          const lastPath = appBootstrap.lastVaultPath;
+          if (lastPath) {
+            try {
+              await loadVault(await runtime.client.openVault({ path: lastPath }));
+              return;
+            } catch {
+              await statePersistence.forgetLastVault();
             }
-            setAppVault(null, "active", null);
-            setStatus("Go backend connected · no vault open");
-            setVaultPickerOpen(true);
           }
+          setAppVault(null, "active", null);
+          setStatus(`Go backend ${server.version} connected · no vault open`);
+          setVaultPickerOpen(true);
         } else {
           const message = await runtime.connect();
           if (active) setStatus(message);
@@ -2338,6 +2652,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
               <WorkspaceRibbon
                 onGraph={() => setLeafView(activeLeafId, "graph")}
                 onFiles={() => setLeafView(activeLeafId, "editor")}
+                onPlugins={openPluginManager}
               />
             }
             leftSidebar={
@@ -2366,6 +2681,10 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
                 }}
                 expandedFolders={expandedFolders}
                 onExpandedFoldersChange={setExpandedFolders}
+                onExpandFolder={(path) => void loadFolderChildren(path)}
+                searchVault={searchVaultIndex}
+                searchQuery={sidebarSearchQuery}
+                onSearchQueryChange={setSidebarSearchQuery}
               />
             }
             main={
@@ -2382,8 +2701,28 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
                 activeDocument={visibleActiveTab?.document ?? null}
                 documents={documents}
                 onOpenDocument={openDocument}
-                onPropertyChange={updateProperty}
-                onAddProperty={() => addProperty(activeTabId)}
+                loadReferences={loadDocumentReferences}
+                loadFacets={loadVaultFacets}
+                onSearchTag={(tag) => {
+                  setSidebarSearchQuery(`tag:${tag}`);
+                  setLeftSidebarPane("search");
+                }}
+                onNavigateHeading={(heading, line) => {
+                  const path = visibleActiveTab?.document?.path;
+                  if (!path) return;
+                  setHeadingReveal({ path, heading, line, request: Date.now() });
+                }}
+                onOpenReference={(path, line) => {
+                  void openDocument(path).then(() =>
+                    setHeadingReveal({
+                      path,
+                      heading: "",
+                      line,
+                      request: Date.now(),
+                      absolute: true,
+                    })
+                  );
+                }}
               />
             }
             footer={
@@ -2427,62 +2766,564 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             onLayoutChange={setLayoutState}
           />
           {lifecycle === "initializing" ? <InitializationOverlay label={status} /> : null}
+          {pluginView ? (
+            <div className="fixed inset-0 z-[210] grid place-items-center bg-black/55 p-4 backdrop-blur-sm">
+              <section className="flex h-[min(44rem,90vh)] w-full max-w-5xl flex-col overflow-hidden rounded-xl border bg-background shadow-2xl [border-color:var(--layout-separator)]">
+                <header className="flex h-12 shrink-0 items-center justify-between border-b px-4 [border-color:var(--layout-separator)]">
+                  <h2 className="text-sm font-semibold">{pluginView.title}</h2>
+                  <button
+                    type="button"
+                    onClick={() => setPluginView(undefined)}
+                    className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
+                  >
+                    Close
+                  </button>
+                </header>
+                <iframe
+                  title={pluginView.title}
+                  sandbox="allow-scripts"
+                  srcDoc={sandboxedPluginDocument(pluginView.html)}
+                  className="min-h-0 flex-1 bg-background"
+                />
+              </section>
+            </div>
+          ) : null}
+
+          {pluginManagerOpen ? (
+            <div className="fixed inset-0 z-[190] grid place-items-center bg-black/45 p-4 backdrop-blur-sm">
+              <section
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="plugin-manager-title"
+                className="flex h-[min(46rem,90vh)] w-full max-w-5xl flex-col overflow-hidden rounded-xl border bg-background shadow-2xl [border-color:var(--layout-separator)]"
+              >
+                <header className="flex items-start justify-between border-b px-5 py-4 [border-color:var(--layout-separator)]">
+                  <div>
+                    <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                      Vault extensions
+                    </p>
+                    <h2 id="plugin-manager-title" className="mt-1 text-lg font-semibold">
+                      Plugins
+                    </h2>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Packages stay global. Permissions and state stay with each vault.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPluginManagerOpen(false)}
+                    className="rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-accent"
+                  >
+                    Close
+                  </button>
+                </header>
+                <div className="grid min-h-0 flex-1 grid-cols-[11rem_minmax(0,1fr)]">
+                  <aside className="flex min-h-0 flex-col border-r bg-muted/20 p-3 [border-color:var(--layout-separator)]">
+                    <nav aria-label="Plugin sections" className="space-y-1">
+                      {(["marketplace", "installed"] as const).map((section) => (
+                        <button
+                          key={section}
+                          type="button"
+                          onClick={() => setPluginSection(section)}
+                          className={`flex w-full items-center justify-between rounded-md px-2.5 py-2 text-left text-xs capitalize ${
+                            pluginSection === section
+                              ? "bg-accent font-medium text-accent-foreground"
+                              : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                          }`}
+                        >
+                          <span>{section}</span>
+                          <span className="font-mono text-[9px] opacity-60">
+                            {section === "marketplace"
+                              ? marketplacePlugins.length
+                              : pluginCatalog.length}
+                          </span>
+                        </button>
+                      ))}
+                    </nav>
+                    <div className="mt-3 border-t pt-3 [border-color:var(--layout-separator)]">
+                      <label className="block cursor-pointer rounded-md border px-2.5 py-2 text-center text-xs font-medium hover:bg-accent [border-color:var(--layout-separator)]">
+                        {pluginBusy ? "Working…" : "Install from file…"}
+                        <input
+                          type="file"
+                          accept=".flux-plugin,.zip"
+                          disabled={pluginBusy}
+                          onChange={(event) => void installPlugin(event)}
+                          className="sr-only"
+                        />
+                      </label>
+                    </div>
+                    <p className="mt-auto border-t pt-3 text-[10px] leading-4 text-muted-foreground [border-color:var(--layout-separator)]">
+                      Signed packages. Per-vault permissions. Isolated runtime.
+                    </p>
+                  </aside>
+                  <div className="flex min-h-0 min-w-0 flex-col">
+                    <div className="border-b p-3 [border-color:var(--layout-separator)]">
+                      <label className="flex h-8 items-center rounded-md border bg-background px-3 [border-color:var(--layout-separator)]">
+                        <input
+                          aria-label="Search plugins"
+                          value={pluginQuery}
+                          onChange={(event) => setPluginQuery(event.target.value)}
+                          placeholder={`Search ${pluginSection} plugins`}
+                          className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+                        />
+                      </label>
+                    </div>
+                    <div className="flux-editor-scroll min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
+                      {pluginSection === "marketplace" ? (
+                        filteredMarketplacePlugins.length ? (
+                          filteredMarketplacePlugins.map((plugin) => {
+                            const installed = pluginCatalog.some(
+                              (entry) =>
+                                entry.manifest.id === plugin.manifest.id &&
+                                entry.manifest.version === plugin.manifest.version
+                            );
+                            return (
+                              <article
+                                key={plugin.manifest.id}
+                                className="rounded-lg border bg-card px-4 py-3 [border-color:var(--layout-separator)]"
+                              >
+                                <div className="flex items-start justify-between gap-4">
+                                  <div className="min-w-0">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <h3 className="text-sm font-semibold">
+                                        {plugin.manifest.name}
+                                      </h3>
+                                      <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                                        {plugin.manifest.version}
+                                      </span>
+                                    </div>
+                                    <p className="mt-1 text-xs text-muted-foreground">
+                                      {plugin.manifest.description || plugin.manifest.id}
+                                    </p>
+                                    <p className="mt-2 font-mono text-[10px] text-muted-foreground">
+                                      {plugin.publisher} · signed registry
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    disabled={pluginBusy || installed}
+                                    onClick={() => void installMarketplacePlugin(plugin)}
+                                    className="shrink-0 rounded-md bg-primary px-2.5 py-1.5 text-xs text-primary-foreground disabled:opacity-50"
+                                  >
+                                    {installed ? "Installed" : "Install"}
+                                  </button>
+                                </div>
+                                {plugin.readme ? (
+                                  <details className="mt-3 border-t pt-2 [border-color:var(--layout-separator)]">
+                                    <summary className="cursor-pointer text-xs font-medium">
+                                      README
+                                    </summary>
+                                    <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap font-sans text-xs leading-5 text-muted-foreground">
+                                      {plugin.readme}
+                                    </pre>
+                                  </details>
+                                ) : null}
+                                <a
+                                  href={plugin.repository}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="mt-2 inline-block text-[10px] text-muted-foreground underline underline-offset-2"
+                                >
+                                  Publisher repository
+                                </a>
+                              </article>
+                            );
+                          })
+                        ) : (
+                          <div className="grid min-h-48 place-items-center rounded-lg border border-dashed px-6 text-center [border-color:var(--layout-separator)]">
+                            <div>
+                              <p className="text-sm font-medium">Marketplace unavailable</p>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {marketplaceError || "No plugins published yet."}
+                              </p>
+                            </div>
+                          </div>
+                        )
+                      ) : filteredPluginCatalog.length ? (
+                        filteredPluginCatalog.map((entry) => {
+                          const vaultState = vaultPlugins.find(
+                            (item) => item.pluginId === entry.manifest.id
+                          );
+                          const hasPrevious = pluginCatalog.some(
+                            (candidate) =>
+                              candidate.manifest.id === entry.manifest.id &&
+                              candidate.plugin.status === "previous"
+                          );
+                          const permissions = [
+                            ...(entry.manifest.requiredPermissions ?? []),
+                            ...(entry.manifest.optionalPermissions ?? []),
+                          ];
+                          const settings = entry.manifest.contributes?.settings ?? [];
+                          return (
+                            <article
+                              key={`${entry.manifest.id}@${entry.manifest.version}`}
+                              className="rounded-lg border bg-card px-4 py-3 [border-color:var(--layout-separator)]"
+                            >
+                              <div className="flex items-start justify-between gap-4">
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <h3 className="truncate text-sm font-semibold">
+                                      {entry.manifest.name}
+                                    </h3>
+                                    <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                                      {entry.manifest.version}
+                                    </span>
+                                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                                      {entry.active ? "Active" : entry.plugin.status}
+                                    </span>
+                                  </div>
+                                  <p className="mt-1 text-xs text-muted-foreground">
+                                    {entry.manifest.description || entry.manifest.id}
+                                  </p>
+                                  <div className="mt-2 flex flex-wrap gap-1">
+                                    {permissions.length ? (
+                                      permissions.map((permission) => (
+                                        <span
+                                          key={permission}
+                                          className="rounded-full border px-2 py-0.5 font-mono text-[9px] text-muted-foreground [border-color:var(--layout-separator)]"
+                                        >
+                                          {permission}
+                                        </span>
+                                      ))
+                                    ) : (
+                                      <span className="text-[10px] text-muted-foreground">
+                                        No vault permissions
+                                      </span>
+                                    )}
+                                  </div>
+                                  {entry.active && vaultState?.enabled ? (
+                                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                      {(entry.manifest.contributes?.commands ?? []).map(
+                                        (command) => (
+                                          <button
+                                            key={command.id}
+                                            type="button"
+                                            onClick={() =>
+                                              void pluginHostRef.current
+                                                ?.emit(entry.manifest.id, `command:${command.id}`, {
+                                                  commandId: command.id,
+                                                })
+                                                .catch((error) =>
+                                                  toast.error(`${command.title} failed`, {
+                                                    description:
+                                                      error instanceof Error
+                                                        ? error.message
+                                                        : String(error),
+                                                  })
+                                                )
+                                            }
+                                            className="rounded-md border px-2 py-1 text-[10px] [border-color:var(--layout-separator)]"
+                                          >
+                                            Run {command.title}
+                                          </button>
+                                        )
+                                      )}
+                                      {(entry.manifest.contributes?.views ?? []).map((view) => (
+                                        <button
+                                          key={view.id}
+                                          type="button"
+                                          onClick={() =>
+                                            void runtime
+                                              .client!.getPluginView(
+                                                vault!.id,
+                                                entry.manifest.id,
+                                                view.id
+                                              )
+                                              .then(setPluginView)
+                                              .catch((error) =>
+                                                toast.error(`${view.title} failed`, {
+                                                  description:
+                                                    error instanceof Error
+                                                      ? error.message
+                                                      : String(error),
+                                                })
+                                              )
+                                          }
+                                          className="rounded-md border px-2 py-1 text-[10px] [border-color:var(--layout-separator)]"
+                                        >
+                                          Open {view.title}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                  {entry.active && vault && settings.length ? (
+                                    <div className="mt-3 space-y-2 border-t pt-3 [border-color:var(--layout-separator)]">
+                                      <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground">
+                                        Vault settings
+                                      </p>
+                                      {settings.map((setting) => {
+                                        const value =
+                                          pluginSettings[entry.manifest.id]?.[setting.id] ??
+                                          setting.default;
+                                        return (
+                                          <label
+                                            key={`${setting.id}:${String(value)}`}
+                                            className="grid gap-1 text-xs"
+                                          >
+                                            <span className="font-medium">{setting.title}</span>
+                                            {setting.type === "boolean" ? (
+                                              <input
+                                                type="checkbox"
+                                                checked={Boolean(value)}
+                                                onChange={(event) =>
+                                                  void savePluginSetting(
+                                                    entry.manifest.id,
+                                                    setting.id,
+                                                    event.target.checked
+                                                  )
+                                                }
+                                                className="h-4 w-4 accent-foreground"
+                                              />
+                                            ) : (
+                                              <input
+                                                type={setting.type === "number" ? "number" : "text"}
+                                                defaultValue={value == null ? "" : String(value)}
+                                                onBlur={(event) => {
+                                                  const nextValue =
+                                                    setting.type === "number"
+                                                      ? Number(event.target.value)
+                                                      : event.target.value;
+                                                  if (
+                                                    typeof nextValue !== "number" ||
+                                                    Number.isFinite(nextValue)
+                                                  ) {
+                                                    void savePluginSetting(
+                                                      entry.manifest.id,
+                                                      setting.id,
+                                                      nextValue
+                                                    );
+                                                  }
+                                                }}
+                                                className="h-8 rounded-md border bg-background px-2 outline-none focus-visible:ring-2 focus-visible:ring-ring [border-color:var(--layout-separator)]"
+                                              />
+                                            )}
+                                            {setting.description ? (
+                                              <span className="text-[10px] text-muted-foreground">
+                                                {setting.description}
+                                              </span>
+                                            ) : null}
+                                          </label>
+                                        );
+                                      })}
+                                    </div>
+                                  ) : null}
+                                </div>
+                                <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+                                  {!entry.active && entry.plugin.status === "staged" ? (
+                                    <button
+                                      type="button"
+                                      disabled={pluginBusy}
+                                      onClick={() =>
+                                        void updatePlugin(() =>
+                                          runtime.client!.activatePlugin(
+                                            entry.manifest.id,
+                                            entry.manifest.version
+                                          )
+                                        )
+                                      }
+                                      className="rounded-md bg-foreground px-2.5 py-1.5 text-xs text-background disabled:opacity-50"
+                                    >
+                                      Activate
+                                    </button>
+                                  ) : null}
+                                  {entry.active && vault ? (
+                                    vaultState?.enabled ? (
+                                      <button
+                                        type="button"
+                                        disabled={pluginBusy}
+                                        onClick={() =>
+                                          void updatePlugin(() =>
+                                            runtime.client!.disableVaultPlugin(
+                                              vault.id,
+                                              entry.manifest.id
+                                            )
+                                          )
+                                        }
+                                        className="rounded-md border px-2.5 py-1.5 text-xs [border-color:var(--layout-separator)]"
+                                      >
+                                        Disable
+                                      </button>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        disabled={pluginBusy}
+                                        onClick={() =>
+                                          void updatePlugin(() =>
+                                            runtime.client!.enableVaultPlugin(
+                                              vault.id,
+                                              entry.manifest.id,
+                                              entry.manifest.requiredPermissions ?? []
+                                            )
+                                          )
+                                        }
+                                        className="rounded-md bg-primary px-2.5 py-1.5 text-xs text-primary-foreground"
+                                      >
+                                        Enable here
+                                      </button>
+                                    )
+                                  ) : null}
+                                  {entry.active && hasPrevious ? (
+                                    <button
+                                      type="button"
+                                      disabled={pluginBusy}
+                                      onClick={() =>
+                                        void updatePlugin(() =>
+                                          runtime.client!.rollbackPlugin(entry.manifest.id)
+                                        )
+                                      }
+                                      className="rounded-md border px-2.5 py-1.5 text-xs [border-color:var(--layout-separator)]"
+                                    >
+                                      Roll back
+                                    </button>
+                                  ) : null}
+                                  {!entry.active ? (
+                                    <button
+                                      type="button"
+                                      disabled={pluginBusy}
+                                      onClick={() =>
+                                        void updatePlugin(() =>
+                                          runtime.client!.uninstallPlugin(
+                                            entry.manifest.id,
+                                            entry.manifest.version
+                                          )
+                                        )
+                                      }
+                                      className="rounded-md px-2.5 py-1.5 text-xs text-destructive hover:bg-destructive/10"
+                                    >
+                                      Uninstall
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </article>
+                          );
+                        })
+                      ) : (
+                        <div className="grid min-h-48 place-items-center rounded-lg border border-dashed text-center [border-color:var(--layout-separator)]">
+                          <div>
+                            <p className="text-sm font-medium">No plugins installed</p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Install a verified .flux-plugin package to begin.
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </div>
+          ) : null}
+
           {vaultPickerOpen ? (
             <div className="fixed inset-0 z-[180] grid place-items-center bg-black/50 p-4 backdrop-blur-[2px]">
-              <div className="grid max-h-[min(42rem,calc(100vh-2rem))] w-full max-w-3xl overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-2xl [border-color:var(--layout-separator)] md:grid-cols-[minmax(0,0.9fr)_minmax(20rem,1.1fr)]">
-                <div className="min-h-0 border-b bg-muted/20 p-4 md:border-b-0 md:border-r [border-color:var(--layout-separator)]">
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="vault-manager-title"
+                className="relative grid h-[min(38rem,calc(100vh-2rem))] w-full max-w-4xl overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-2xl [border-color:var(--layout-separator)] md:grid-cols-[minmax(18rem,0.85fr)_minmax(24rem,1.15fr)]"
+              >
+                {vault ? (
+                  <button
+                    type="button"
+                    aria-label="Close vault manager"
+                    onClick={() => setVaultPickerOpen(false)}
+                    className="absolute right-3 top-3 z-10 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                  >
+                    Close
+                  </button>
+                ) : null}
+                <div className="flex min-h-0 flex-col border-b bg-muted/20 p-4 md:border-b-0 md:border-r [border-color:var(--layout-separator)]">
                   <p className="px-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                    Vaults
+                    Recent vaults
                   </p>
+                  <label className="mt-3 flex h-8 items-center rounded-md border bg-background px-2.5 [border-color:var(--layout-separator)]">
+                    <input
+                      aria-label="Search vaults"
+                      value={vaultQuery}
+                      onChange={(event) => setVaultQuery(event.target.value)}
+                      placeholder="Find a vault"
+                      className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+                    />
+                    <span className="font-mono text-[9px] text-muted-foreground">
+                      {filteredSelectableVaults.length}
+                    </span>
+                  </label>
                   <div
-                    className="mt-3 max-h-[24rem] space-y-1 overflow-y-auto"
+                    className="flux-editor-scroll mt-3 min-h-0 flex-1 space-y-1 overflow-y-auto"
                     role="list"
                     aria-label="Recent vaults"
                   >
-                    {selectableVaults.map((registered) => {
+                    {filteredSelectableVaults.map((registered) => {
                       const selected = activeVaultId === registered.key;
+                      const recent = recentVaults.find(
+                        (candidate) => candidate.path === registered.path
+                      );
                       return (
-                        <button
+                        <div
                           key={registered.key}
-                          type="button"
                           role="listitem"
-                          title={registered.path}
-                          onClick={() => void openRegisteredVault(registered)}
-                          className={`w-full rounded-md px-3 py-2.5 text-left outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring ${
+                          className={`group flex items-center rounded-md pr-1 transition-colors ${
                             selected ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"
                           }`}
                         >
-                          <span className="flex items-center gap-2">
-                            <span
-                              className={`size-1.5 rounded-full ${selected ? "bg-primary" : "bg-muted-foreground/35"}`}
-                            />
-                            <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                              {registered.name}
+                          <button
+                            type="button"
+                            title={registered.path}
+                            onClick={() => void openRegisteredVault(registered)}
+                            className="min-w-0 flex-1 px-3 py-2.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          >
+                            <span className="flex items-center gap-2">
+                              <span
+                                className={`size-1.5 rounded-full ${selected ? "bg-primary" : "bg-muted-foreground/35"}`}
+                              />
+                              <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                                {registered.name}
+                              </span>
+                              {selected ? (
+                                <span className="text-[10px] text-muted-foreground">Open</span>
+                              ) : null}
                             </span>
-                            {selected ? (
-                              <span className="text-[10px] text-muted-foreground">Open</span>
-                            ) : null}
-                          </span>
-                          <span className="mt-1 block truncate pl-3.5 font-mono text-[10px] text-muted-foreground">
-                            {registered.path}
-                          </span>
-                        </button>
+                            <span className="mt-1 block truncate pl-3.5 font-mono text-[10px] text-muted-foreground">
+                              {registered.path}
+                            </span>
+                          </button>
+                          {recent && !selected ? (
+                            <button
+                              type="button"
+                              aria-label={`Forget ${registered.name}`}
+                              title="Remove from recent vaults"
+                              onClick={() => void forgetRegisteredVault(recent.vaultId)}
+                              className="rounded px-2 py-1 text-xs text-muted-foreground opacity-0 hover:bg-background/70 hover:text-foreground focus:opacity-100 group-hover:opacity-100"
+                            >
+                              ×
+                            </button>
+                          ) : null}
+                        </div>
                       );
                     })}
-                    {!selectableVaults.length ? (
+                    {!filteredSelectableVaults.length ? (
                       <p className="rounded-md border border-dashed px-3 py-4 text-xs leading-5 text-muted-foreground [border-color:var(--layout-separator)]">
-                        Open a folder once and it will remain available here.
+                        {vaultQuery
+                          ? "No vault matches this search."
+                          : "Open a folder once and it will remain available here."}
                       </p>
                     ) : null}
                   </div>
                 </div>
-                <div className="flex flex-col justify-between p-6">
+                <div className="flex flex-col justify-center p-8">
                   <div>
                     <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
-                      Manage vaults
+                      Flux workspace
                     </p>
-                    <h2 className="mt-2 text-lg font-semibold tracking-tight">
-                      Choose where to work
+                    <div className="mt-5 grid size-14 rotate-3 place-items-center rounded-2xl border bg-muted/40 font-mono text-sm font-semibold shadow-sm [border-color:var(--layout-separator)]">
+                      FX
+                    </div>
+                    <h2
+                      id="vault-manager-title"
+                      className="mt-5 text-xl font-semibold tracking-tight"
+                    >
+                      Choose where knowledge lives
                     </h2>
                     <p className="mt-2 text-sm leading-6 text-muted-foreground">
                       {runtime.vaultAccess === "registry"
@@ -2490,33 +3331,24 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
                         : "Open any notes folder, Obsidian vault, Git repository, or empty directory. Derived data stays in its hidden .flux folder."}
                     </p>
                   </div>
-                  <div className="mt-8 flex flex-col gap-2">
+                  <div className="mt-8 grid gap-2">
                     {runtime.vaultAccess !== "registry" ? (
                       <button
                         type="button"
                         onClick={() => void chooseVault("open")}
-                        className="rounded-md bg-primary px-3 py-2.5 text-sm font-medium text-primary-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="rounded-md bg-primary px-3 py-3 text-left text-sm font-medium text-primary-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
-                        Open another folder…
+                        Open folder as vault…
                       </button>
                     ) : null}
                     <button
                       type="button"
                       onClick={() => void chooseVault("create")}
                       disabled={!runtime.selectVaultDirectory}
-                      className="rounded-md border px-3 py-2.5 text-sm font-medium outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40 [border-color:var(--layout-separator)]"
+                      className="rounded-md border px-3 py-3 text-left text-sm font-medium outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40 [border-color:var(--layout-separator)]"
                     >
                       Create new vault…
                     </button>
-                    {vault ? (
-                      <button
-                        type="button"
-                        onClick={() => setVaultPickerOpen(false)}
-                        className="px-3 py-2 text-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
-                      >
-                        Return to {vault.name}
-                      </button>
-                    ) : null}
                     {renameRequest ? (
                       <div className="fixed inset-0 z-[190] grid place-items-center bg-black/35 p-4">
                         <form
@@ -2563,34 +3395,73 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
             </div>
           ) : null}
           {trashOpen ? (
-            <div className="fixed inset-0 z-[180] grid place-items-center bg-black/45 p-4">
-              <div className="flex max-h-[min(36rem,80vh)] w-full max-w-lg flex-col rounded-xl border bg-popover text-popover-foreground shadow-2xl [border-color:var(--layout-separator)]">
-                <div className="flex items-start justify-between gap-4 border-b p-5 [border-color:var(--layout-separator)]">
+            <div className="fixed inset-0 z-[180] grid place-items-center bg-black/45 p-4 backdrop-blur-[2px]">
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="trash-title"
+                className="flex h-[min(38rem,82vh)] w-full max-w-3xl flex-col rounded-xl border bg-popover text-popover-foreground shadow-2xl [border-color:var(--layout-separator)]"
+              >
+                <div className="flex items-start justify-between gap-4 border-b px-5 py-4 [border-color:var(--layout-separator)]">
                   <div>
-                    <h2 className="text-base font-semibold">Trash</h2>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Restore items or permanently delete them.
+                    <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                      {vault?.name ?? "Vault"} · {trashEntries.length} items
+                    </p>
+                    <h2 id="trash-title" className="mt-1 text-lg font-semibold">
+                      Vault trash
+                    </h2>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Items remain recoverable until permanently deleted.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setTrashOpen(false)}
-                    className="rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-                  >
-                    Close
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {trashEntries.length ? (
+                      <button
+                        type="button"
+                        onClick={() => setEmptyTrashRequest(true)}
+                        className="rounded-md px-2.5 py-1.5 text-xs text-destructive hover:bg-destructive/10"
+                      >
+                        Empty trash
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => setTrashOpen(false)}
+                      className="rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      Close
+                    </button>
+                  </div>
                 </div>
-                <div className="min-h-32 overflow-y-auto p-3">
-                  {trashEntries.length ? (
+                <div className="border-b p-3 [border-color:var(--layout-separator)]">
+                  <label className="flex h-8 items-center rounded-md border bg-background px-3 [border-color:var(--layout-separator)]">
+                    <input
+                      aria-label="Search trash"
+                      value={trashQuery}
+                      onChange={(event) => setTrashQuery(event.target.value)}
+                      placeholder="Filter by original path"
+                      className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+                    />
+                    <span className="font-mono text-[9px] text-muted-foreground">
+                      {filteredTrashEntries.length}
+                    </span>
+                  </label>
+                </div>
+                <div className="flux-editor-scroll min-h-0 flex-1 overflow-y-auto p-3">
+                  {filteredTrashEntries.length ? (
                     <div className="space-y-1">
-                      {trashEntries.map((entry) => (
+                      {filteredTrashEntries.map((entry) => (
                         <div
                           key={entry.id}
-                          className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50"
+                          className="group flex items-center gap-3 rounded-lg border border-transparent px-3 py-2.5 hover:border-[var(--layout-separator)] hover:bg-accent/35"
                         >
+                          <div className="grid size-8 shrink-0 place-items-center rounded-md bg-muted font-mono text-[10px] text-muted-foreground">
+                            {entry.originalPath.split(".").pop()?.slice(0, 3).toUpperCase() ||
+                              "FILE"}
+                          </div>
                           <div className="min-w-0 flex-1">
                             <div className="truncate text-sm font-medium">{entry.originalPath}</div>
-                            <div className="mt-0.5 text-xs text-muted-foreground">
+                            <div className="mt-0.5 text-[10px] text-muted-foreground">
                               Deleted {new Date(entry.deletedAt).toLocaleString()} ·{" "}
                               {entry.sizeBytes.toLocaleString()} bytes
                             </div>
@@ -2605,7 +3476,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
                           <button
                             type="button"
                             onClick={() => setPermanentDeleteRequest(entry)}
-                            className="rounded-md px-2.5 py-1.5 text-xs text-destructive hover:bg-destructive/10"
+                            className="rounded-md px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                           >
                             Delete permanently
                           </button>
@@ -2613,10 +3484,22 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
                       ))}
                     </div>
                   ) : (
-                    <div className="grid min-h-32 place-items-center text-sm text-muted-foreground">
-                      Trash is empty.
+                    <div className="grid min-h-48 place-items-center text-center text-sm text-muted-foreground">
+                      <div>
+                        <p className="font-medium text-foreground">
+                          {trashQuery ? "No matching trash items" : "Trash is empty"}
+                        </p>
+                        <p className="mt-1 text-xs">
+                          {trashQuery
+                            ? "Try another path."
+                            : "Deleted notes will appear here for recovery."}
+                        </p>
+                      </div>
                     </div>
                   )}
+                </div>
+                <div className="border-t px-5 py-3 text-[10px] text-muted-foreground [border-color:var(--layout-separator)]">
+                  Flux removes trash older than 30 days when vault opens.
                 </div>
               </div>
             </div>
@@ -2646,6 +3529,32 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
                     className="rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground"
                   >
                     Delete permanently
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+          {emptyTrashRequest ? (
+            <div className="fixed inset-0 z-[205] grid place-items-center bg-black/60 p-4">
+              <div className="w-full max-w-sm rounded-xl border bg-popover p-5 text-popover-foreground shadow-2xl [border-color:var(--layout-separator)]">
+                <h2 className="text-base font-semibold">Empty vault trash?</h2>
+                <p className="mt-3 text-sm leading-5 text-muted-foreground">
+                  This permanently deletes all {trashEntries.length} items. This cannot be undone.
+                </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEmptyTrashRequest(false)}
+                    className="rounded-md px-3 py-1.5 text-sm hover:bg-accent"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void emptyTrash()}
+                    className="rounded-md bg-destructive px-3 py-1.5 text-sm text-destructive-foreground"
+                  >
+                    Empty trash
                   </button>
                 </div>
               </div>

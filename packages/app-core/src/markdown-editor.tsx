@@ -250,12 +250,14 @@ function MarkdownSource({
   live,
   documents,
   findRequest,
+  revealRequest,
   onChange,
 }: {
   value: string;
   live: boolean;
   documents: DemoDocument[];
   findRequest: number;
+  revealRequest?: { line: number; request: number };
   onChange: (value: string) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -693,6 +695,16 @@ function MarkdownSource({
     view.focus();
   }, [findRequest]);
 
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!revealRequest || !view) return;
+    const line = view.state.doc.line(
+      Math.max(1, Math.min(revealRequest.line, view.state.doc.lines))
+    );
+    view.dispatch({ selection: { anchor: line.from }, scrollIntoView: true });
+    view.focus();
+  }, [revealRequest]);
+
   return <div ref={hostRef} />;
 }
 
@@ -704,6 +716,7 @@ export function MarkdownEditor({
   onTitleCommit,
   showBacklinks,
   findRequest,
+  revealRequest,
   onDropDocument,
   onOpenDocument,
   documents = [],
@@ -715,10 +728,17 @@ export function MarkdownEditor({
   onTitleCommit?: (title: string) => void;
   showBacklinks: boolean;
   findRequest: number;
+  revealRequest?: {
+    heading: string;
+    line: number;
+    request: number;
+    absolute?: boolean;
+  };
   onDropDocument?: (title: string) => void;
   onOpenDocument?: (title: string) => void;
   documents?: DemoDocument[];
 }) {
+  const editorRootRef = useRef<HTMLDivElement>(null);
   const { frontmatter, body } = splitFrontmatter(document.content);
   const backlinkGroups = useMemo(() => {
     const grouped = new Map<string, ReturnType<typeof linkedMentionsFor>>();
@@ -730,8 +750,17 @@ export function MarkdownEditor({
     return [...grouped];
   }, [document.path, document.title, documents]);
 
+  useEffect(() => {
+    if (!revealRequest || mode !== "read" || !editorRootRef.current) return;
+    const heading = [...editorRootRef.current.querySelectorAll("h1,h2,h3,h4,h5,h6")].find(
+      (element) => element.textContent?.trim() === revealRequest.heading.trim()
+    );
+    heading?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [mode, revealRequest]);
+
   return (
     <div
+      ref={editorRootRef}
       className="flux-editor-scroll h-full min-h-0 overflow-y-auto overscroll-contain"
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
@@ -760,6 +789,16 @@ export function MarkdownEditor({
           live={mode === "live"}
           documents={documents}
           findRequest={findRequest}
+          revealRequest={
+            revealRequest
+              ? {
+                  ...revealRequest,
+                  line: revealRequest.absolute
+                    ? Math.max(1, revealRequest.line - (frontmatter.split(/\r?\n/).length - 1))
+                    : revealRequest.line,
+                }
+              : undefined
+          }
           onChange={(value) => onChange(frontmatter + value)}
         />
       ) : (

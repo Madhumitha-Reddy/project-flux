@@ -268,7 +268,7 @@ export function GraphView({
   const [nodeSize, setNodeSize] = useState(1);
   const [linkThickness, setLinkThickness] = useState(1);
   const [groups, setGroups] = useState<Array<{ id: number; query: string; color: string }>>([]);
-  const [centerForce, setCenterForce] = useState(0.519);
+  const [centerForce, setCenterForce] = useState(0.5187132);
   const [repelForce, setRepelForce] = useState(10);
   const [linkForce, setLinkForce] = useState(1);
   const [linkDistance, setLinkDistance] = useState(250);
@@ -709,7 +709,7 @@ export function GraphView({
     setTextFadeThreshold(0);
     setNodeSize(1);
     setLinkThickness(1);
-    setCenterForce(0.519);
+    setCenterForce(0.5187132);
     setRepelForce(10);
     setLinkForce(1);
     setLinkDistance(250);
@@ -1120,7 +1120,7 @@ export function GraphView({
                   type="range"
                   min="0"
                   max="1"
-                  step="0.001"
+                  step="0.0000001"
                   value={centerForce}
                   onChange={(event) => setCenterForce(Number(event.target.value))}
                 />

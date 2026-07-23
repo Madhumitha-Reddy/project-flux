@@ -18,6 +18,7 @@ import (
 	"github.com/flux-pkm/server/internal/domain"
 	"github.com/flux-pkm/server/internal/files"
 	"github.com/flux-pkm/server/internal/index"
+	"github.com/flux-pkm/server/internal/runtimecoord"
 	watcherRuntime "github.com/flux-pkm/server/internal/watcher"
 	"github.com/google/uuid"
 )
@@ -28,7 +29,11 @@ var (
 	ErrNotOpen       = errors.New("vault is not open")
 	ErrVaultMismatch = errors.New("requested vault is outside the configured vault")
 	ErrNestedVault   = errors.New("nested vaults are not supported")
+	ErrVaultInUse    = errors.New("vault is already open in another Flux runtime")
+	ErrDuplicateID   = errors.New("vault identity is already open from another path")
 )
+
+const vaultIdleTTL = 15 * time.Minute
 
 type identity struct {
 	VaultID            string `json:"vault_id"`
@@ -47,10 +52,14 @@ type Context struct {
 	root     string
 	cancel   context.CancelFunc
 	indexing sync.WaitGroup
+	mutation sync.Mutex
 	jobs     chan []watcherRuntime.Event
 	dirty    atomic.Bool
 	broken   atomic.Bool
+	indexGen atomic.Uint64
 	changes  []revisionChange
+	lease    *runtimecoord.FileLock
+	lastUsed atomic.Int64
 }
 
 type revisionChange struct {
@@ -102,6 +111,14 @@ func (c *Context) VaultInfo() domain.VaultInfo {
 }
 
 func (c *Context) RootPath() string { return c.root }
+
+// Mutate serializes canonical filesystem changes for one vault. Reads and
+// background parsing remain concurrent; only short commit sections use it.
+func (c *Context) Mutate(fn func() error) error {
+	c.mutation.Lock()
+	defer c.mutation.Unlock()
+	return fn()
+}
 
 func (c *Context) ListFiles() ([]domain.FileEntry, error) {
 	if c.Index != nil {
@@ -167,15 +184,29 @@ type Manager struct {
 	storageRoot    string
 	allowAnyPath   bool
 	mu             sync.RWMutex
-	context        *Context
+	contexts       map[string]*Context
+	currentID      string
+	stop           chan struct{}
+	done           chan struct{}
+	closeOnce      sync.Once
+	closeErr       error
 }
 
 func NewManager(configuredPath string, allowAnyPath bool) *Manager {
-	return &Manager{configuredPath: configuredPath, allowAnyPath: allowAnyPath}
+	return newManager(configuredPath, "", allowAnyPath)
 }
 
 func NewStorageManager(storageRoot string) *Manager {
-	return &Manager{storageRoot: storageRoot}
+	return newManager("", storageRoot, false)
+}
+
+func newManager(configuredPath, storageRoot string, allowAnyPath bool) *Manager {
+	manager := &Manager{
+		configuredPath: configuredPath, storageRoot: storageRoot, allowAnyPath: allowAnyPath,
+		contexts: make(map[string]*Context), stop: make(chan struct{}), done: make(chan struct{}),
+	}
+	go manager.reapIdle()
+	return manager
 }
 
 func (m *Manager) Configured() bool {
@@ -216,24 +247,44 @@ func (m *Manager) Available() ([]domain.VaultLocation, error) {
 }
 
 func (m *Manager) Open(requestedPath string) (*Context, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	root, err := m.resolveRoot(requestedPath)
 	if err != nil {
 		return nil, err
 	}
-	if m.context != nil && samePath(m.context.root, root) {
-		return m.context, nil
+	m.evictIdle(time.Now(), root)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, existing := range m.contexts {
+		if samePath(existing.root, root) {
+			existing.touch()
+			m.currentID = id
+			return existing, nil
+		}
 	}
 
 	fluxDirectory := filepath.Join(root, ".flux")
 	if err := os.MkdirAll(fluxDirectory, 0o700); err != nil {
 		return nil, err
 	}
+	lease, err := runtimecoord.Acquire(filepath.Join(fluxDirectory, "runtime.lock"))
+	if errors.Is(err, runtimecoord.ErrLocked) {
+		return nil, ErrVaultInUse
+	}
+	if err != nil {
+		return nil, err
+	}
+	owned := false
+	defer func() {
+		if !owned {
+			_ = lease.Close()
+		}
+	}()
 	vaultIdentity, err := loadOrCreateIdentity(filepath.Join(fluxDirectory, "vault.json"))
 	if err != nil {
 		return nil, err
+	}
+	if existing := m.contexts[vaultIdentity.VaultID]; existing != nil && !samePath(existing.root, root) {
+		return nil, ErrDuplicateID
 	}
 	fileService := files.New(root)
 	state := domain.VaultStateReadOnlyReady
@@ -243,13 +294,6 @@ func (m *Manager) Open(requestedPath string) (*Context, error) {
 	indexStore, indexErr := index.Open(filepath.Join(fluxDirectory, "index.db"))
 	if indexErr != nil {
 		state = domain.VaultStateDegraded
-	} else if cached, cacheErr := indexStore.ListFiles(); cacheErr != nil {
-		state = domain.VaultStateDegraded
-	} else if len(cached) == 0 {
-		entries, listErr := fileService.List()
-		if listErr != nil || indexStore.ReplaceFiles(entries) != nil {
-			state = domain.VaultStateDegraded
-		}
 	}
 
 	next := &Context{
@@ -263,10 +307,12 @@ func (m *Manager) Open(requestedPath string) (*Context, error) {
 		changed: make(chan struct{}),
 		root:    root,
 		jobs:    make(chan []watcherRuntime.Event, 32),
+		lease:   lease,
 	}
 	indexContext, cancel := context.WithCancel(context.Background())
 	next.cancel = cancel
 	next.Revision.Store(1)
+	next.touch()
 	if state != domain.VaultStateDegraded {
 		next.setLifecycle(domain.VaultStateWritable, nil)
 	}
@@ -281,11 +327,10 @@ func (m *Manager) Open(requestedPath string) (*Context, error) {
 		next.indexing.Add(1)
 		go next.runIndexer(indexContext)
 	}
-	if m.context != nil {
-		_ = m.context.close()
-	}
-	m.context = next
-	return m.context, nil
+	m.contexts[vaultIdentity.VaultID] = next
+	m.currentID = vaultIdentity.VaultID
+	owned = true
+	return next, nil
 }
 
 func (m *Manager) Create(requestedPath string) (*Context, error) {
@@ -396,41 +441,88 @@ func (m *Manager) resolveRoot(requestedPath string) (string, error) {
 
 func (m *Manager) Degrade(vaultID string) {
 	m.mu.RLock()
-	context := m.context
+	context := m.contexts[vaultID]
 	m.mu.RUnlock()
-	if context != nil && context.VaultInfo().ID == vaultID {
+	if context != nil {
 		context.degrade()
 	}
 }
 
 func (m *Manager) CurrentInfo() *domain.VaultInfo {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.context == nil {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	context := m.contexts[m.currentID]
+	if context == nil {
 		return nil
 	}
-	info := m.context.VaultInfo()
+	context.touch()
+	info := context.VaultInfo()
 	return &info
 }
 
 func (m *Manager) Get(vaultID string) (*Context, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.context == nil || m.context.VaultInfo().ID != vaultID {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	context := m.contexts[vaultID]
+	if context == nil {
 		return nil, ErrNotOpen
 	}
-	return m.context, nil
+	context.touch()
+	return context, nil
+}
+
+func (c *Context) touch() { c.lastUsed.Store(time.Now().UnixNano()) }
+
+func (m *Manager) evictIdle(now time.Time, keepRoot string) {
+	m.mu.Lock()
+	cutoff := now.Add(-vaultIdleTTL).UnixNano()
+	retired := make([]*Context, 0)
+	for id, context := range m.contexts {
+		if context.lastUsed.Load() >= cutoff || (keepRoot != "" && samePath(context.root, keepRoot)) {
+			continue
+		}
+		delete(m.contexts, id)
+		if m.currentID == id {
+			m.currentID = ""
+		}
+		retired = append(retired, context)
+	}
+	m.mu.Unlock()
+	for _, context := range retired {
+		_ = context.close()
+	}
+}
+
+func (m *Manager) reapIdle() {
+	defer close(m.done)
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			m.evictIdle(time.Now(), "")
+		case <-m.stop:
+			return
+		}
+	}
 }
 
 func (m *Manager) Close() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.context == nil {
-		return nil
-	}
-	err := m.context.close()
-	m.context = nil
-	return err
+	m.closeOnce.Do(func() {
+		close(m.stop)
+		<-m.done
+		m.mu.Lock()
+		contexts := m.contexts
+		m.contexts = make(map[string]*Context)
+		m.currentID = ""
+		m.mu.Unlock()
+		for _, context := range contexts {
+			if err := context.close(); m.closeErr == nil {
+				m.closeErr = err
+			}
+		}
+	})
+	return m.closeErr
 }
 
 func (c *Context) close() error {
@@ -446,6 +538,9 @@ func (c *Context) close() error {
 		if closeErr := c.Index.Close(); err == nil {
 			err = closeErr
 		}
+	}
+	if leaseErr := c.lease.Close(); err == nil {
+		err = leaseErr
 	}
 	return err
 }
@@ -476,6 +571,7 @@ func (c *Context) reconcile(ctx context.Context) {
 }
 
 func (c *Context) reconcilePass(ctx context.Context) bool {
+	generation := c.indexGen.Load()
 	c.setLifecycle(domain.VaultStateIndexing, &domain.IndexingProgress{Phase: "scanning"})
 	entries, err := c.Files.List()
 	if err != nil {
@@ -493,6 +589,11 @@ func (c *Context) reconcilePass(ctx context.Context) bool {
 	batch := make([]index.PreparedFile, 0, indexBatchSize)
 	flush := func() {
 		if len(batch) == 0 {
+			return
+		}
+		if generation != c.indexGen.Load() {
+			batch = batch[:0]
+			c.dirty.Store(true)
 			return
 		}
 		if err := c.Index.IndexPrepared(batch); err != nil {
@@ -526,6 +627,10 @@ func (c *Context) reconcilePass(ctx context.Context) bool {
 		}
 	}
 	flush()
+	if generation != c.indexGen.Load() {
+		c.dirty.Store(true)
+		return true
+	}
 	if err := c.Index.DeleteMissing(entries); err != nil {
 		progress.Failed++
 	}
@@ -661,12 +766,15 @@ func (c *Context) RebuildIndex() error {
 	if c.Index == nil {
 		return errors.New("vault index is unavailable")
 	}
-	if err := c.Index.Reset(); err != nil {
-		return err
-	}
-	c.broken.Store(false)
-	c.queue([]watcherRuntime.Event{{Op: watcherRuntime.OpReconcile}})
-	return nil
+	return c.Mutate(func() error {
+		c.indexGen.Add(1)
+		if err := c.Index.Reset(); err != nil {
+			return err
+		}
+		c.broken.Store(false)
+		c.queue([]watcherRuntime.Event{{Op: watcherRuntime.OpReconcile}})
+		return nil
+	})
 }
 
 func (c *Context) FileMetadata(relative string) (domain.FileEntry, error) {

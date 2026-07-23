@@ -571,11 +571,8 @@ func (s *Service) fileLock(resolvedPath string) *sync.Mutex {
 }
 
 func (s *Service) resolve(relativePath string) (string, string, error) {
-	if relativePath == "" || strings.ContainsRune(relativePath, '\x00') || path.IsAbs(relativePath) {
-		return "", "", ErrInvalidPath
-	}
-	normalized := path.Clean(strings.ReplaceAll(relativePath, "\\", "/"))
-	if normalized == "." || normalized == ".." || strings.HasPrefix(normalized, "../") || IsInternal(normalized) {
+	normalized, err := NormalizePath(relativePath)
+	if err != nil {
 		return "", "", ErrInvalidPath
 	}
 
@@ -585,6 +582,39 @@ func (s *Service) resolve(relativePath string) (string, string, error) {
 		return "", "", ErrInvalidPath
 	}
 	return resolved, normalized, nil
+}
+
+func NormalizePath(relativePath string) (string, error) {
+	if relativePath == "" || strings.ContainsRune(relativePath, '\x00') || path.IsAbs(relativePath) {
+		return "", ErrInvalidPath
+	}
+	normalized := path.Clean(strings.ReplaceAll(relativePath, "\\", "/"))
+	if normalized == "." || normalized == ".." || strings.HasPrefix(normalized, "../") || IsInternal(normalized) {
+		return "", ErrInvalidPath
+	}
+	return normalized, nil
+}
+
+// RemoveCreated removes only content whose hash still matches a just-created
+// plan result. It exists for vault-plan rollback and never removes directories.
+func (s *Service) RemoveCreated(relativePath, expectedHash string) error {
+	s.tree.Lock()
+	defer s.tree.Unlock()
+	resolvedPath, _, err := s.resolve(relativePath)
+	if err != nil {
+		return err
+	}
+	if err := rejectSymlinks(s.root, resolvedPath); err != nil {
+		return err
+	}
+	content, err := os.ReadFile(resolvedPath)
+	if err != nil {
+		return err
+	}
+	if expectedHash == "" || hash(content) != expectedHash {
+		return ErrConflict
+	}
+	return os.Remove(resolvedPath)
 }
 
 func rejectSymlinks(root, target string) error {
