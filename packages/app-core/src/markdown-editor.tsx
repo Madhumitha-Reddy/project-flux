@@ -890,10 +890,11 @@ export function MarkdownEditor({
     );
   };
 
-  const renderGroupList = (groups: Array<[string, ReturnType<typeof linkedMentionsFor>]>) => (
+  const renderGroupList = (groups: Array<[string, ReturnType<typeof linkedMentionsFor>]>, defaultExpanded: boolean = false) => (
     <div className="space-y-3">
       {groups.map(([source, mentions]) => {
-        const isExpanded = expandedGroups[`${activeTitle}::${source}`] !== false;
+        const stored = expandedGroups[`${activeTitle}::${source}`];
+        const isExpanded = stored !== undefined ? stored : defaultExpanded;
         return (
           <div key={source} className="space-y-1.5">
             <button
@@ -1003,7 +1004,7 @@ export function MarkdownEditor({
               </span>
             </div>
             {linkedGroups.length ? (
-              renderGroupList(linkedGroups)
+              renderGroupList(linkedGroups, true)
             ) : (
               <p className="text-xs text-muted-foreground italic py-1">No backlinks found.</p>
             )}
