@@ -10,6 +10,8 @@ let backendProcess: ChildProcess | null = null;
 const vaultEventStreams = new Map<string, AbortController>();
 const closeReadyWindows = new Set<number>();
 const closePendingWindows = new Set<number>();
+let quitAfterFlush = false;
+let allowQuit = false;
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
@@ -222,6 +224,34 @@ async function ensureBackend() {
   throw new Error("FLUX backend did not become ready");
 }
 
+function resumeQuitIfReady() {
+  if (!quitAfterFlush || closePendingWindows.size > 0 || allowQuit) return;
+  allowQuit = true;
+  app.quit();
+}
+
+function finishWindowFlush(window: BrowserWindow, windowId: number) {
+  if (!closePendingWindows.delete(windowId)) return;
+  if (quitAfterFlush) {
+    resumeQuitIfReady();
+    return;
+  }
+  if (window.isDestroyed()) return;
+  closeReadyWindows.add(windowId);
+  window.close();
+}
+
+function requestWindowFlush(window: BrowserWindow, windowId: number) {
+  if (closePendingWindows.has(windowId)) return;
+  if (window.isDestroyed() || window.webContents.isDestroyed()) {
+    return;
+  }
+  closePendingWindows.add(windowId);
+  window.webContents.send("flux-before-close");
+  const timeout = setTimeout(() => finishWindowFlush(window, windowId), 5_000);
+  timeout.unref();
+}
+
 function createWindow(targetUrl?: string) {
   const window = new BrowserWindow({
     width: 1200,
@@ -251,25 +281,18 @@ function createWindow(targetUrl?: string) {
   }
 
   if (!mainWindow) mainWindow = window;
+  const windowId = window.webContents.id;
   window.on("close", (event) => {
-    const id = window.webContents.id;
-    if (closeReadyWindows.delete(id)) return;
+    if (allowQuit || closeReadyWindows.delete(windowId)) return;
+    if (window.webContents.isDestroyed()) return;
     event.preventDefault();
-    if (closePendingWindows.has(id)) return;
-    closePendingWindows.add(id);
-    window.webContents.send("flux-before-close");
-    const timeout = setTimeout(() => {
-      if (window.isDestroyed()) return;
-      closePendingWindows.delete(id);
-      closeReadyWindows.add(id);
-      window.close();
-    }, 5_000);
-    timeout.unref();
+    requestWindowFlush(window, windowId);
   });
   window.on("closed", () => {
-    closePendingWindows.delete(window.webContents.id);
-    closeReadyWindows.delete(window.webContents.id);
+    closePendingWindows.delete(windowId);
+    closeReadyWindows.delete(windowId);
     if (mainWindow === window) mainWindow = null;
+    resumeQuitIfReady();
   });
 
   return window;
@@ -295,7 +318,17 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  if (allowQuit) return;
+  event.preventDefault();
+  quitAfterFlush = true;
+  for (const window of BrowserWindow.getAllWindows()) {
+    requestWindowFlush(window, window.webContents.id);
+  }
+  resumeQuitIfReady();
+});
+
+app.on("will-quit", () => {
   // Shared runtime may still serve MCP clients after Electron closes.
   if (backendHeartbeat) clearInterval(backendHeartbeat);
   backendHeartbeat = null;
@@ -313,9 +346,7 @@ ipcMain.handle("get-window-id", (event) => {
 ipcMain.on("flux-close-ready", (event) => {
   const window = BrowserWindow.fromWebContents(event.sender);
   if (!window || window.isDestroyed()) return;
-  closePendingWindows.delete(event.sender.id);
-  closeReadyWindows.add(event.sender.id);
-  window.close();
+  finishWindowFlush(window, event.sender.id);
 });
 
 ipcMain.handle("select-vault-directory", async (_event, mode: unknown) => {
