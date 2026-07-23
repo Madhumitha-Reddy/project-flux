@@ -528,8 +528,18 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     const byPath = new Map(library.map((document) => [document.path ?? document.title, document]));
     for (const tab of tabs)
       if (tab.document) byPath.set(tab.document.path ?? tab.document.title, tab.document);
+      
+    // Include all non-ignored markdown files as stubs for autocomplete and linking
+    if (vault) {
+      for (const entry of fileEntries) {
+        if ((entry.kind === "markdown" || entry.kind === "text") && !isIgnoredPath(entry.path) && !byPath.has(entry.path)) {
+          byPath.set(entry.path, { path: entry.path, title: titleFromPath(entry.path), content: "", contentHash: "" });
+        }
+      }
+    }
+    
     return [...byPath.values()];
-  }, [tabs, vault, vaultDocuments]);
+  }, [tabs, vault, vaultDocuments, fileEntries]);
   const selectableVaults = useMemo(() => {
     const byPath = new Map<string, { key: string; name: string; path: string }>();
     for (const location of availableVaults) {
@@ -862,7 +872,7 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
     if (!runtime.client) return [];
     const previousDocuments = new Map(savedDocumentsRef.current);
     const markdownEntries = entries.filter(
-      (entry) => (entry.kind === "markdown" || entry.kind === "text") && !isIgnoredPath(entry.path)
+      (entry) => (entry.kind === "markdown" || entry.kind === "text") && savedDocumentsRef.current.has(entry.path)
     );
     const loaded = await Promise.all(
       markdownEntries.map(async (entry) => {
@@ -918,12 +928,15 @@ export function FluxApp({ runtime, windowControlsInset }: FluxAppProps) {
       );
     }
     setVaultDocuments(resolved);
-    globalBacklinkStore.rebuild(resolved);
+    // Update the index with the synchronously loaded files, without clearing it
+    for (const doc of resolved) {
+      globalBacklinkStore.updateSingleDocument(doc);
+    }
     
-    // Background incremental indexing for ignored directories (e.g., node_modules)
+    // Background incremental indexing for ALL remaining markdown files
     // Ensures instant startup while building full-vault backlinks without blocking UI
     const backgroundEntries = entries.filter(
-      (entry) => (entry.kind === "markdown" || entry.kind === "text") && isIgnoredPath(entry.path)
+      (entry) => (entry.kind === "markdown" || entry.kind === "text") && !savedDocumentsRef.current.has(entry.path)
     );
     setTimeout(async () => {
       let index = 0;
