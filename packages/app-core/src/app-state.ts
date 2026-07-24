@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import type { MarkdownMode } from "./markdown-editor";
+import type { BookmarkItem } from "./bookmark-store";
 import type { WorkspaceNode } from "./workspace-tree";
 import type { LeftPane, RightPane } from "./workspace-sidebars";
 import type { FluxLayoutState } from "@flux/shared-ui/hooks/use-flux-layout";
@@ -69,6 +70,8 @@ interface AppState {
   indexing: IndexingProgress | null;
   workspace: PersistedWorkspaceSession | null;
   settings: Record<string, unknown>;
+  bookmarksByVault: Record<string, BookmarkItem[]>;
+  bookmarkGroupsByVault: Record<string, string[]>;
   hydrate(settings: Record<string, unknown>): void;
   setVault(
     vault: { id: string; name: string } | null,
@@ -78,6 +81,8 @@ interface AppState {
   setLifecycle(lifecycle: VaultLifecycleState, indexing?: IndexingProgress | null): void;
   setWorkspace(workspace: PersistedWorkspaceSession | null): void;
   setSetting(key: string, value: unknown): void;
+  setBookmarks(vaultId: string, bookmarks: BookmarkItem[]): void;
+  setBookmarkGroups(vaultId: string, groups: string[]): void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -88,6 +93,8 @@ export const useAppStore = create<AppState>((set) => ({
   indexing: null,
   workspace: null,
   settings: {},
+  bookmarksByVault: {},
+  bookmarkGroupsByVault: {},
   hydrate: (settings) =>
     set((current) => ({
       settings: { ...settings, ...current.settings },
@@ -109,6 +116,14 @@ export const useAppStore = create<AppState>((set) => ({
   setWorkspace: (workspace) => set({ workspace }),
   setSetting: (key, value) =>
     set((current) => ({ settings: { ...current.settings, [key]: value } })),
+  setBookmarks: (vaultId, bookmarks) =>
+    set((current) => ({
+      bookmarksByVault: { ...current.bookmarksByVault, [vaultId]: bookmarks },
+    })),
+  setBookmarkGroups: (vaultId, groups) =>
+    set((current) => ({
+      bookmarkGroupsByVault: { ...current.bookmarkGroupsByVault, [vaultId]: groups },
+    })),
 }));
 
 let volatileLastVaultPath: string | null = null;

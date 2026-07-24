@@ -180,7 +180,15 @@ function cachedMarkdownHtml(value: string, documents: DemoDocument[]) {
   return html;
 }
 
-function ReadingView({ value, documents, onNavigate }: { value: string; documents: DemoDocument[]; onNavigate?: (target: string) => void }) {
+function ReadingView({
+  value,
+  documents,
+  onNavigate,
+}: {
+  value: string;
+  documents: DemoDocument[];
+  onNavigate?: (target: string) => void;
+}) {
   const { theme } = useTheme();
   const resolvedTheme = document.documentElement.classList.contains("dark") ? "dark" : "light";
   const sourceHtml = useMemo(() => cachedMarkdownHtml(value, documents), [documents, value]);

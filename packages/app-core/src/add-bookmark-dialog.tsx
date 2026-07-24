@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Dialog } from "radix-ui";
 import { X, ChevronsUpDown } from "lucide-react";
 import type { BookmarkItem } from "./bookmark-store";
@@ -24,34 +24,17 @@ export function AddBookmarkDialog({
   onRemove,
   onCreateGroup,
 }: AddBookmarkDialogProps) {
-  const [title, setTitle] = useState("");
-  const [selectedGroup, setSelectedGroup] = useState<string>("");
-  const [newGroupName, setNewGroupName] = useState("");
-  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
-
   const path = target?.path || target?.title || "";
-
-  // Check if a bookmark already exists for this note (by path or title)
   const existingBookmark = existingBookmarks.find(
     (b) =>
       b.path.toLowerCase() === path.toLowerCase() ||
       b.title.toLowerCase() === (target?.title || "").toLowerCase()
   );
   const isEditing = Boolean(existingBookmark);
-
-  useEffect(() => {
-    if (target) {
-      if (existingBookmark) {
-        setTitle(existingBookmark.title);
-        setSelectedGroup(existingBookmark.group || "");
-      } else {
-        setTitle(target.title || "");
-        setSelectedGroup("");
-      }
-      setNewGroupName("");
-      setIsCreatingGroup(false);
-    }
-  }, [target, open, existingBookmark]);
+  const [title, setTitle] = useState(existingBookmark?.title ?? target?.title ?? "");
+  const [selectedGroup, setSelectedGroup] = useState<string>(existingBookmark?.group ?? "");
+  const [newGroupName, setNewGroupName] = useState("");
+  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
 
   if (!target) return null;
 
@@ -138,7 +121,9 @@ export function AddBookmarkDialog({
             </div>
 
             {/* Row 3: Bookmark Group */}
-            <div className={`grid grid-cols-[1fr_260px] items-center py-2.5 ${isCreatingGroup ? "border-b [border-color:var(--layout-separator)]" : ""}`}>
+            <div
+              className={`grid grid-cols-[1fr_260px] items-center py-2.5 ${isCreatingGroup ? "border-b [border-color:var(--layout-separator)]" : ""}`}
+            >
               <label htmlFor="bookmark-group" className="text-xs text-foreground font-normal">
                 Bookmark group
               </label>
@@ -157,7 +142,10 @@ export function AddBookmarkDialog({
                   ))}
                   <option value="__new__">+ New Group...</option>
                 </select>
-                <ChevronsUpDown className="absolute right-2.5 top-1/2 size-3 -translate-y-1/2 pointer-events-none text-muted-foreground" strokeWidth={1.5} />
+                <ChevronsUpDown
+                  className="absolute right-2.5 top-1/2 size-3 -translate-y-1/2 pointer-events-none text-muted-foreground"
+                  strokeWidth={1.5}
+                />
               </div>
             </div>
 

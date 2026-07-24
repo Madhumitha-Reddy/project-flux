@@ -68,6 +68,7 @@ import {
 } from "./workspace-sidebars";
 import { AddBookmarkDialog } from "./add-bookmark-dialog";
 import {
+  DEFAULT_BOOKMARK_GROUPS,
   loadBookmarks,
   saveBookmarks,
   loadBookmarkGroups,
@@ -138,6 +139,7 @@ export interface FluxAppProps {
 }
 
 const DOCUMENT_LIBRARY = [DEMO_DOCUMENT, ...REFERENCE_DOCUMENTS];
+const EMPTY_BOOKMARKS: BookmarkItem[] = [];
 const bootstrapStatus = new WeakMap<FluxClient, Promise<ServerStatus>>();
 
 function getBootstrapStatus(client: FluxClient) {
@@ -378,7 +380,11 @@ function EditorPathBreadcrumb({
                       transition={{ type: "spring", stiffness: 150, damping: 22 }}
                       className="flex items-center min-w-0 overflow-hidden"
                     >
-                      {index ? <span className="select-none text-muted-foreground/35 mx-[3px] font-normal text-xs">/</span> : null}
+                      {index ? (
+                        <span className="select-none text-muted-foreground/35 mx-[3px] font-normal text-xs">
+                          /
+                        </span>
+                      ) : null}
                       <button
                         type="button"
                         aria-label={`Reveal ${segment}`}
@@ -627,10 +633,17 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const [pdfExportOpen, setPdfExportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarSelectedPath, setSidebarSelectedPath] = useState<string | undefined>();
-  const [bookmarks, setBookmarks] = useState<BookmarkItem[]>(() => loadBookmarks());
-  const [bookmarkGroups, setBookmarkGroups] = useState<string[]>(() => loadBookmarkGroups());
+  const bookmarkVaultId = vault?.id ?? "default";
+  const bookmarks =
+    useAppStore((state) => state.bookmarksByVault[bookmarkVaultId]) ?? EMPTY_BOOKMARKS;
+  const bookmarkGroups =
+    useAppStore((state) => state.bookmarkGroupsByVault[bookmarkVaultId]) ?? DEFAULT_BOOKMARK_GROUPS;
+  const setStoredBookmarks = useAppStore((state) => state.setBookmarks);
+  const setStoredBookmarkGroups = useAppStore((state) => state.setBookmarkGroups);
   const [addBookmarkDialogOpen, setAddBookmarkDialogOpen] = useState(false);
-  const [bookmarkTarget, setBookmarkTarget] = useState<{ title: string; path?: string } | null>(null);
+  const [bookmarkTarget, setBookmarkTarget] = useState<{ title: string; path?: string } | null>(
+    null
+  );
   const [leftSidebarPane, setLeftSidebarPane] = useState<LeftPane>("files");
   const [rightSidebarPane, setRightSidebarPane] = useState<RightPane>("backlinks");
   const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
@@ -642,6 +655,14 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     request: number;
     absolute?: boolean;
   }>();
+  const effectiveLeftSidebarPane: LeftPane =
+    plugins[leftSidebarPane === "files" ? "file-explorer" : leftSidebarPane] !== false
+      ? leftSidebarPane
+      : plugins["file-explorer"] !== false
+        ? "files"
+        : plugins.search !== false
+          ? "search"
+          : "bookmarks";
   const [layoutState, setLayoutState] = useState<FluxLayoutState>();
   const [expandedFolders, setExpandedFolders] = useState<string[]>([]);
   const nextTabIdRef = useRef(2);
@@ -681,25 +702,16 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const lastIndexingProgressRef = useRef<IndexingProgress | null>(null);
 
   useEffect(() => {
-    if (plugins["file-explorer"] === false && leftSidebarPane === "files") {
-      if (plugins["search"] !== false) setLeftSidebarPane("search");
-      else if (plugins["bookmarks"] !== false) setLeftSidebarPane("bookmarks");
-    } else if (plugins["search"] === false && leftSidebarPane === "search") {
-      if (plugins["file-explorer"] !== false) setLeftSidebarPane("files");
-      else if (plugins["bookmarks"] !== false) setLeftSidebarPane("bookmarks");
-    } else if (plugins["bookmarks"] === false && leftSidebarPane === "bookmarks") {
-      if (plugins["file-explorer"] !== false) setLeftSidebarPane("files");
-      else if (plugins["search"] !== false) setLeftSidebarPane("search");
-    }
-
-    if (plugins["graph-view"] === false) {
+    if (plugins["graph-view"] !== false) return;
+    const timer = window.setTimeout(() => {
       setWorkspaceRoot((root) =>
         mapWorkspaceLeaves(root, (leaf) =>
           leaf.view === "graph" ? { ...leaf, view: "editor" } : leaf
         )
       );
-    }
-  }, [plugins, leftSidebarPane, rightSidebarPane]);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [plugins]);
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeLeaf = findWorkspaceLeaf(workspaceRoot, activeLeafId);
@@ -714,40 +726,30 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     visibleActiveTab?.pdf?.path ??
     visibleActiveTab?.preview?.path;
 
-  useEffect(() => {
-    if (activeFilePath) {
-      setSidebarSelectedPath(activeFilePath);
-      const separator = activeFilePath.lastIndexOf("/");
-      if (separator > 0) {
-        const folder = activeFilePath.slice(0, separator);
-        const parts = folder.split("/").filter(Boolean);
-        setExpandedFolders((current) => {
-          const next = new Set(current);
-          for (let index = 0; index < parts.length; index++) {
-            next.add(parts.slice(0, index + 1).join("/"));
-          }
-          return [...next].sort();
-        });
-      }
-    } else {
-      setSidebarSelectedPath(undefined);
-    }
-  }, [activeFilePath]);
   const documents = useMemo(() => {
     const library = vault ? vaultDocuments : DOCUMENT_LIBRARY;
     const byPath = new Map(library.map((document) => [document.path ?? document.title, document]));
     for (const tab of tabs)
       if (tab.document) byPath.set(tab.document.path ?? tab.document.title, tab.document);
-      
+
     // Include all non-ignored markdown files as stubs for autocomplete and linking
     if (vault) {
       for (const entry of fileEntries) {
-        if ((entry.kind === "markdown" || entry.kind === "text") && !isIgnoredPath(entry.path) && !byPath.has(entry.path)) {
-          byPath.set(entry.path, { path: entry.path, title: titleFromPath(entry.path), content: "", contentHash: "" });
+        if (
+          (entry.kind === "markdown" || entry.kind === "text") &&
+          !isIgnoredPath(entry.path) &&
+          !byPath.has(entry.path)
+        ) {
+          byPath.set(entry.path, {
+            path: entry.path,
+            title: titleFromPath(entry.path),
+            content: "",
+            contentHash: "",
+          });
         }
       }
     }
-    
+
     return [...byPath.values()];
   }, [tabs, vault, vaultDocuments, fileEntries]);
   const selectableVaults = useMemo(() => {
@@ -846,36 +848,49 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   }, [runtime.client, sidebarIndexRevision, vault]);
 
   useEffect(() => {
-    setBookmarks(loadBookmarks(vault?.id));
-    setBookmarkGroups(loadBookmarkGroups(vault?.id));
-  }, [vault?.id]);
+    setStoredBookmarks(bookmarkVaultId, loadBookmarks(vault?.id));
+    setStoredBookmarkGroups(bookmarkVaultId, loadBookmarkGroups(vault?.id));
+  }, [bookmarkVaultId, setStoredBookmarkGroups, setStoredBookmarks, vault?.id]);
 
-  useEffect(() => {
-    saveBookmarks(bookmarks, vault?.id);
-  }, [bookmarks, vault?.id]);
+  const updateBookmarks = (updater: (current: BookmarkItem[]) => BookmarkItem[]) => {
+    const current = useAppStore.getState().bookmarksByVault[bookmarkVaultId] ?? EMPTY_BOOKMARKS;
+    const next = updater(current);
+    setStoredBookmarks(bookmarkVaultId, next);
+    saveBookmarks(next, vault?.id);
+  };
 
-  useEffect(() => {
-    saveBookmarkGroups(bookmarkGroups, vault?.id);
-  }, [bookmarkGroups, vault?.id]);
+  const updateBookmarkGroups = (updater: (current: string[]) => string[]) => {
+    const current =
+      useAppStore.getState().bookmarkGroupsByVault[bookmarkVaultId] ?? DEFAULT_BOOKMARK_GROUPS;
+    const next = updater(current);
+    setStoredBookmarkGroups(bookmarkVaultId, next);
+    saveBookmarkGroups(next, vault?.id);
+  };
 
   const handleOpenAddBookmark = (target?: { title: string; path?: string } | null) => {
     const defaultTarget =
       target ||
       (visibleActiveTab
-        ? { title: visibleActiveTab.title, path: visibleActiveTab.document?.path || visibleActiveTab.pdf?.path }
+        ? {
+            title: visibleActiveTab.title,
+            path: visibleActiveTab.document?.path || visibleActiveTab.pdf?.path,
+          }
         : null);
     if (!defaultTarget) return;
     setBookmarkTarget(defaultTarget);
     setAddBookmarkDialogOpen(true);
   };
 
-  const handleSaveBookmark = (data: { id?: string; title: string; path: string; group?: string | null }) => {
+  const handleSaveBookmark = (data: {
+    id?: string;
+    title: string;
+    path: string;
+    group?: string | null;
+  }) => {
     if (data.id) {
-      setBookmarks((prev) =>
+      updateBookmarks((prev) =>
         prev.map((item) =>
-          item.id === data.id
-            ? { ...item, title: data.title, group: data.group }
-            : item
+          item.id === data.id ? { ...item, title: data.title, group: data.group } : item
         )
       );
       setStatus(`Updated bookmark ${data.title}`);
@@ -887,18 +902,18 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
         group: data.group,
         createdAt: Date.now(),
       };
-      setBookmarks((prev) => [...prev, newItem]);
+      updateBookmarks((prev) => [...prev, newItem]);
       setStatus(`Bookmarked ${data.title}`);
     }
   };
 
   const handleRemoveBookmark = (id: string) => {
-    setBookmarks((prev) => prev.filter((item) => item.id !== id));
+    updateBookmarks((prev) => prev.filter((item) => item.id !== id));
   };
 
   const handleCreateBookmarkGroup = (name: string) => {
     if (name && !bookmarkGroups.includes(name)) {
-      setBookmarkGroups((prev) => [...prev, name]);
+      updateBookmarkGroups((prev) => [...prev, name]);
     }
   };
 
@@ -1325,7 +1340,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     if (!runtime.client) return [];
     const previousDocuments = new Map(savedDocumentsRef.current);
     const markdownEntries = entries.filter(
-      (entry) => (entry.kind === "markdown" || entry.kind === "text") && savedDocumentsRef.current.has(entry.path)
+      (entry) =>
+        (entry.kind === "markdown" || entry.kind === "text") &&
+        savedDocumentsRef.current.has(entry.path)
     );
     const loaded = await Promise.all(
       markdownEntries.map(async (entry) => {
@@ -1386,11 +1403,13 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     for (const doc of resolved) {
       globalBacklinkStore.updateSingleDocument(doc);
     }
-    
+
     // Background incremental indexing for ALL remaining markdown files
     // Ensures instant startup while building full-vault backlinks without blocking UI
     const backgroundEntries = entries.filter(
-      (entry) => (entry.kind === "markdown" || entry.kind === "text") && !savedDocumentsRef.current.has(entry.path)
+      (entry) =>
+        (entry.kind === "markdown" || entry.kind === "text") &&
+        !savedDocumentsRef.current.has(entry.path)
     );
     setTimeout(async () => {
       let index = 0;
@@ -1407,7 +1426,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                 content: file.content,
                 contentHash: file.contentHash,
               } satisfies DemoDocument;
-            } catch { return null; }
+            } catch {
+              return null;
+            }
           })
         );
         for (const doc of chunkLoaded) {
@@ -1581,7 +1602,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     }
     if (persisted?.leftSidebarPane) setLeftSidebarPane(persisted.leftSidebarPane);
     if (persisted?.rightSidebarPane) {
-      setRightSidebarPane(persisted.rightSidebarPane === "outline" ? "backlinks" : persisted.rightSidebarPane);
+      setRightSidebarPane(
+        persisted.rightSidebarPane === "outline" ? "backlinks" : persisted.rightSidebarPane
+      );
     } else {
       setRightSidebarPane("backlinks");
     }
@@ -1629,7 +1652,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       activeTabId,
       workspaceRoot,
       activeLeafId,
-      leftSidebarPane,
+      leftSidebarPane: effectiveLeftSidebarPane,
       rightSidebarPane,
       layout: layoutState,
       expandedFolders,
@@ -1647,7 +1670,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   }, [
     activeLeafId,
     activeTabId,
-    leftSidebarPane,
+    effectiveLeftSidebarPane,
     layoutState,
     expandedFolders,
     rightSidebarPane,
@@ -2203,7 +2226,8 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
 
   const deletePath = async (path: string) => {
     if (!runtime.client || !vault) return;
-    if (general.confirmDeleteNote && !window.confirm(`Are you sure you want to delete "${path}"?`)) return;
+    if (general.confirmDeleteNote && !window.confirm(`Are you sure you want to delete "${path}"?`))
+      return;
     try {
       await runWithToast(
         (async () => {
@@ -2412,7 +2436,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
           headingReveal && headingReveal.path === tab.document.path ? headingReveal : undefined
         }
         onDropDocument={openDocument}
-        onOpenDocument={(identifier, inPlace) => openDocument(identifier, inPlace ? tab.id : undefined)}
+        onOpenDocument={(identifier, inPlace) =>
+          openDocument(identifier, inPlace ? tab.id : undefined)
+        }
         documents={documents}
       />
     );
@@ -2913,7 +2939,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       if (visibleActiveTab?.document) {
         const identifier = visibleActiveTab.document.path ?? visibleActiveTab.document.title;
         const mentions = globalBacklinkStore.getLinkedMentions(identifier);
-        
+
         // Deduplicate by source document to count unique backlinking files, not total mentions
         const uniqueSources = new Set(mentions.map((m) => m.source));
         setBacklinksCount(uniqueSources.size);
@@ -2921,7 +2947,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
         setBacklinksCount(0);
       }
     };
-    
+
     updateCount();
     const unsubscribe = globalBacklinkStore.subscribe(updateCount);
     return () => {
@@ -2929,7 +2955,11 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     };
   }, [visibleActiveTab?.document]);
 
-  const openDocument = async (identifier: string, targetTabId?: number, historyNavigation = false) => {
+  const openDocument = async (
+    identifier: string,
+    targetTabId?: number,
+    historyNavigation = false
+  ) => {
     const navigationIntent = ++navigationIntentRef.current;
     if (vault) void flushPendingSaves(vault.id);
     const exactEntry = vault ? fileEntries.find((entry) => entry.path === identifier) : undefined;
@@ -3080,6 +3110,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             document,
           ]);
           placeTab((id) => createWorkspaceTab(id, document));
+          revealSidebarPath(document.path);
           return;
         }
         placeTab((id) => ({
@@ -3120,6 +3151,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     }
     if (!document) return;
     placeTab((id) => createWorkspaceTab(id, document));
+    revealSidebarPath(document.path);
   };
 
   const createNote = async (parent = "", requestedName = "Untitled") => {
@@ -3467,7 +3499,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             leftSidebarHeader={
               <WorkspaceSidebarHeader
                 side="left"
-                active={leftSidebarPane}
+                active={effectiveLeftSidebarPane}
                 onChange={setLeftSidebarPane}
                 plugins={plugins}
               />
@@ -3498,9 +3530,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             leftSidebar={
               <WorkspaceLeftSidebar
                 activeTitle={visibleActiveTab?.title ?? ""}
-                activePath={sidebarSelectedPath}
+                activePath={sidebarSelectedPath ?? activeFilePath}
                 onSelectPath={setSidebarSelectedPath}
-                pane={leftSidebarPane}
+                pane={effectiveLeftSidebarPane}
                 documents={documents}
                 onOpenDocument={(path) => void openDocument(path)}
                 onOpenPdf={() => setLeafView(activeLeafId, "pdf")}
@@ -4427,6 +4459,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             vaultName={vault?.name}
           />
           <AddBookmarkDialog
+            key={`${bookmarkTarget?.path ?? bookmarkTarget?.title ?? "none"}:${addBookmarkDialogOpen}`}
             open={addBookmarkDialogOpen}
             onOpenChange={setAddBookmarkDialogOpen}
             target={bookmarkTarget}

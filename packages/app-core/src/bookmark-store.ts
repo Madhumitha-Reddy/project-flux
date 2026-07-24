@@ -6,7 +6,7 @@ export interface BookmarkItem {
   createdAt: number;
 }
 
-const DEFAULT_GROUPS = ["Writing", "Reference"];
+export const DEFAULT_BOOKMARK_GROUPS = ["Writing", "Reference"];
 
 function getStorageKey(key: string, vaultId?: string): string {
   return vaultId ? `flux-bookmarks-${key}:${vaultId}` : `flux-bookmarks-${key}`;
@@ -14,7 +14,10 @@ function getStorageKey(key: string, vaultId?: string): string {
 
 const memoryStore = new Map<string, string>();
 
-function getStorage(): { getItem(key: string): string | null; setItem(key: string, value: string): void } {
+function getStorage(): {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+} {
   try {
     if (typeof localStorage !== "undefined" && typeof localStorage.getItem === "function") {
       return localStorage;
@@ -55,14 +58,14 @@ export function saveBookmarks(bookmarks: BookmarkItem[], vaultId?: string): void
 
 export function loadBookmarkGroups(vaultId?: string): string[] {
   const storage = getStorage();
-  if (!storage) return DEFAULT_GROUPS;
+  if (!storage) return DEFAULT_BOOKMARK_GROUPS;
   try {
     const raw = storage.getItem(getStorageKey("groups", vaultId));
-    if (!raw) return DEFAULT_GROUPS;
+    if (!raw) return DEFAULT_BOOKMARK_GROUPS;
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : DEFAULT_GROUPS;
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : DEFAULT_BOOKMARK_GROUPS;
   } catch {
-    return DEFAULT_GROUPS;
+    return DEFAULT_BOOKMARK_GROUPS;
   }
 }
 

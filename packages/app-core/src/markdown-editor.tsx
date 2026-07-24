@@ -1,4 +1,14 @@
-import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+  Component,
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import {
   Bookmark,
   BookOpen,
@@ -259,7 +269,8 @@ const highlightField = StateField.define<DecorationSet>({
         highlights = highlights.update({
           add: [
             Decoration.mark({
-              class: "bg-yellow-400/30 dark:bg-yellow-500/20 ring-2 ring-yellow-400/60 dark:ring-yellow-500/40 rounded-sm",
+              class:
+                "bg-yellow-400/30 dark:bg-yellow-500/20 ring-2 ring-yellow-400/60 dark:ring-yellow-500/40 rounded-sm",
             }).range(e.value.from, e.value.to),
           ],
         });
@@ -311,7 +322,9 @@ function MarkdownSource({
 
   useEffect(() => {
     let active = true;
-    const handleNavigate = (event: CustomEvent<{ path: string; line: number; excerpt?: string }>) => {
+    const handleNavigate = (
+      event: CustomEvent<{ path: string; line: number; excerpt?: string }>
+    ) => {
       const targetPath = event.detail.path;
       if (documentPathRef.current === targetPath) {
         const view = viewRef.current;
@@ -322,7 +335,7 @@ function MarkdownSource({
         const bodyLineNum = Math.max(1, totalLineNum - frontmatterLinesRef.current);
         const lineLimit = view.state.doc.lines;
         const lineIndex = Math.min(bodyLineNum, lineLimit);
-        
+
         const line = view.state.doc.line(lineIndex);
         let anchor = line.from;
         let head = line.to;
@@ -339,18 +352,18 @@ function MarkdownSource({
         }
 
         view.focus();
-        
+
         // Dispatch highlight effect and update selection
         view.dispatch({
           selection: { anchor, head },
           scrollIntoView: true,
-          effects: [addHighlight.of({ from: anchor, to: head })]
+          effects: [addHighlight.of({ from: anchor, to: head })],
         });
 
         setTimeout(() => {
           if (active) {
             view.dispatch({
-              effects: [removeHighlight.of(null)]
+              effects: [removeHighlight.of(null)],
             });
           }
         }, 1500);
@@ -843,14 +856,14 @@ export function MarkdownEditor({
     () => globalBacklinkStore.getCacheVersion()
   );
 
-  const linkedMentions = useMemo(
-    () => globalBacklinkStore.getLinkedMentions(activeTitle),
-    [activeTitle, storeVersion]
-  );
-  const unlinkedMentions = useMemo(
-    () => globalBacklinkStore.getUnlinkedMentions(document.title),
-    [document.title, storeVersion]
-  );
+  const linkedMentions = useMemo(() => {
+    void storeVersion;
+    return globalBacklinkStore.getLinkedMentions(activeTitle);
+  }, [activeTitle, storeVersion]);
+  const unlinkedMentions = useMemo(() => {
+    void storeVersion;
+    return globalBacklinkStore.getUnlinkedMentions(document.title);
+  }, [document.title, storeVersion]);
 
   const groupMentions = (mentions: ReturnType<typeof linkedMentionsFor>) => {
     const grouped = new Map<string, typeof mentions>();
@@ -877,12 +890,21 @@ export function MarkdownEditor({
   };
 
   const titleFromPath = (path: string) => {
-    return path.split("/").pop()?.replace(/\.(md|markdown)$/i, "") ?? path;
+    return (
+      path
+        .split("/")
+        .pop()
+        ?.replace(/\.(md|markdown)$/i, "") ?? path
+    );
   };
 
   const highlightQuery = (text: string, query: string) => {
     if (!text) return null;
-    const cleanTarget = query.split("/").pop()?.replace(/\.(md|markdown)$/i, "") ?? query;
+    const cleanTarget =
+      query
+        .split("/")
+        .pop()
+        ?.replace(/\.(md|markdown)$/i, "") ?? query;
     const escapeRegExp = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const targetEsc = escapeRegExp(cleanTarget);
 
@@ -911,7 +933,11 @@ export function MarkdownEditor({
     );
   };
 
-  const renderGroupList = (groups: Array<[string, ReturnType<typeof linkedMentionsFor>]>, defaultExpanded: boolean = false, type: "linked" | "unlinked") => (
+  const renderGroupList = (
+    groups: Array<[string, ReturnType<typeof linkedMentionsFor>]>,
+    defaultExpanded: boolean = false,
+    type: "linked" | "unlinked"
+  ) => (
     <div className="space-y-3">
       {groups.map(([source, mentions]) => {
         const key = `${type}::${activeTitle}::${source}`;
@@ -925,12 +951,12 @@ export function MarkdownEditor({
               className="flex w-full items-center justify-between text-left text-xs font-semibold text-foreground outline-none group py-0.5"
             >
               <span className="flex items-center gap-1.5 min-w-0">
-                <ChevronRight className={`size-3.5 shrink-0 transition-transform text-muted-foreground ${isExpanded ? "rotate-90" : ""}`} />
+                <ChevronRight
+                  className={`size-3.5 shrink-0 transition-transform text-muted-foreground ${isExpanded ? "rotate-90" : ""}`}
+                />
                 <span className="truncate">{titleFromPath(source)}</span>
               </span>
-              <span className="text-[10px] text-muted-foreground font-mono">
-                {mentions.length}
-              </span>
+              <span className="text-[10px] text-muted-foreground font-mono">{mentions.length}</span>
             </button>
             {isExpanded && (
               <div className="space-y-2">
@@ -941,7 +967,8 @@ export function MarkdownEditor({
                     onClick={() => {
                       onOpenDocument?.(source);
                       const detail = { path: source, line: mention.line, excerpt: mention.excerpt };
-                      const dispatch = () => window.dispatchEvent(new CustomEvent("flux-navigate-editor", { detail }));
+                      const dispatch = () =>
+                        window.dispatchEvent(new CustomEvent("flux-navigate-editor", { detail }));
                       dispatch();
                       setTimeout(dispatch, 30);
                       setTimeout(dispatch, 100);
@@ -1037,48 +1064,54 @@ export function MarkdownEditor({
           {/* Linked Mentions Section */}
           {/* Linked Mentions Section */}
           <div className="mb-6">
-            <button 
+            <button
               className="flex w-full items-center justify-between py-1 font-medium text-foreground/80 mb-2 outline-none group hover:text-foreground transition-colors"
-              onClick={() => setLinkedExpanded(prev => !prev)}
+              onClick={() => setLinkedExpanded((prev) => !prev)}
             >
               <div className="flex items-center gap-1.5 min-w-0">
-                <ChevronRight className={`size-3.5 shrink-0 text-muted-foreground transition-transform ${linkedExpanded ? "rotate-90 text-foreground" : "group-hover:text-foreground"}`} />
+                <ChevronRight
+                  className={`size-3.5 shrink-0 text-muted-foreground transition-transform ${linkedExpanded ? "rotate-90 text-foreground" : "group-hover:text-foreground"}`}
+                />
                 <span className="text-[13px]">Linked mentions</span>
               </div>
               <span className="text-[12px] text-muted-foreground opacity-60">
                 {linkedMentions.length}
               </span>
             </button>
-            {linkedExpanded && (
-              linkedGroups.length ? (
+            {linkedExpanded &&
+              (linkedGroups.length ? (
                 renderGroupList(linkedGroups, true, "linked")
               ) : (
-                <p className="text-[11px] text-muted-foreground opacity-60 px-5">No backlinks found.</p>
-              )
-            )}
+                <p className="text-[11px] text-muted-foreground opacity-60 px-5">
+                  No backlinks found.
+                </p>
+              ))}
           </div>
 
           {/* Unlinked Mentions Section */}
           <div>
-            <button 
+            <button
               className="flex w-full items-center justify-between py-1 font-medium text-foreground/80 mb-2 outline-none group hover:text-foreground transition-colors"
-              onClick={() => setUnlinkedExpanded(prev => !prev)}
+              onClick={() => setUnlinkedExpanded((prev) => !prev)}
             >
               <div className="flex items-center gap-1.5 min-w-0">
-                <ChevronRight className={`size-3.5 shrink-0 transition-transform ${unlinkedExpanded ? "rotate-90 text-foreground" : "group-hover:text-foreground"}`} />
+                <ChevronRight
+                  className={`size-3.5 shrink-0 transition-transform ${unlinkedExpanded ? "rotate-90 text-foreground" : "group-hover:text-foreground"}`}
+                />
                 <span className="text-[13px]">Unlinked mentions</span>
               </div>
               <span className="text-[12px] text-muted-foreground opacity-60">
                 {unlinkedMentions.length}
               </span>
             </button>
-            {unlinkedExpanded && (
-              unlinkedGroups.length ? (
+            {unlinkedExpanded &&
+              (unlinkedGroups.length ? (
                 renderGroupList(unlinkedGroups, false, "unlinked")
               ) : (
-                <p className="text-[11px] text-muted-foreground px-5">No unlinked mentions found.</p>
-              )
-            )}
+                <p className="text-[11px] text-muted-foreground px-5">
+                  No unlinked mentions found.
+                </p>
+              ))}
           </div>
         </section>
       ) : null}
@@ -1220,10 +1253,7 @@ export function MarkdownDocumentMenu({
         <FolderInput className="size-4" />
         Move file to…
       </DisabledItem>
-      <DropdownMenu.Item
-        className={menuItemClassName}
-        onSelect={() => onBookmarkChange(true)}
-      >
+      <DropdownMenu.Item className={menuItemClassName} onSelect={() => onBookmarkChange(true)}>
         <Bookmark className="size-4 text-muted-foreground" />
         Bookmark…
         {bookmarked ? <MenuCheck /> : null}

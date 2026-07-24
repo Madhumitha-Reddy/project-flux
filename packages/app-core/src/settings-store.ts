@@ -1,4 +1,6 @@
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useMemo } from "react";
+
+import { useAppStore } from "./app-state";
 
 export interface GeneralSettings {
   launchBehaviour: "last-vault" | "empty" | "vault-picker";
@@ -71,32 +73,7 @@ export const DEFAULT_SETTINGS: FluxSettings = {
     sidebarDensity: "comfortable",
     fontScaling: 100,
   },
-  keychain: [
-    {
-      id: "openai",
-      name: "OpenAI API Key",
-      service: "openai",
-      key: "sk-proj-••••••••9823",
-      status: "configured",
-      createdAt: "2026-07-01",
-    },
-    {
-      id: "github",
-      name: "GitHub Token",
-      service: "github",
-      key: "ghp_••••••••4192",
-      status: "configured",
-      createdAt: "2026-07-10",
-    },
-    {
-      id: "anthropic",
-      name: "Anthropic API Key",
-      service: "anthropic",
-      key: "",
-      status: "not-set",
-      createdAt: "",
-    },
-  ],
+  keychain: [],
   plugins: {
     "file-explorer": true,
     search: true,
@@ -121,7 +98,17 @@ export const DEFAULT_SETTINGS: FluxSettings = {
 };
 
 const STORAGE_KEY = "flux-app-settings-v1";
-const CHANGE_EVENT = "flux-settings-changed";
+const APP_STATE_KEY = "fluxSettings";
+
+function mergeSettings(settings?: Partial<FluxSettings>): FluxSettings {
+  return {
+    general: { ...DEFAULT_SETTINGS.general, ...settings?.general },
+    editor: { ...DEFAULT_SETTINGS.editor, ...settings?.editor },
+    appearance: { ...DEFAULT_SETTINGS.appearance, ...settings?.appearance },
+    keychain: settings?.keychain ?? DEFAULT_SETTINGS.keychain,
+    plugins: { ...DEFAULT_SETTINGS.plugins, ...settings?.plugins },
+  };
+}
 
 export function loadSettings(): FluxSettings {
   if (typeof window === "undefined") return DEFAULT_SETTINGS;
@@ -129,13 +116,7 @@ export function loadSettings(): FluxSettings {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_SETTINGS;
     const parsed = JSON.parse(raw);
-    return {
-      general: { ...DEFAULT_SETTINGS.general, ...parsed.general },
-      editor: { ...DEFAULT_SETTINGS.editor, ...parsed.editor },
-      appearance: { ...DEFAULT_SETTINGS.appearance, ...parsed.appearance },
-      keychain: parsed.keychain ?? DEFAULT_SETTINGS.keychain,
-      plugins: { ...DEFAULT_SETTINGS.plugins, ...parsed.plugins },
-    };
+    return mergeSettings(parsed);
   } catch {
     return DEFAULT_SETTINGS;
   }
@@ -144,7 +125,6 @@ export function loadSettings(): FluxSettings {
 export function saveSettings(settings: FluxSettings): void {
   if (typeof window === "undefined") return;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-  window.dispatchEvent(new Event(CHANGE_EVENT));
   applyAppearanceSettings(settings.appearance);
 }
 
@@ -163,7 +143,10 @@ export function applyAppearanceSettings(appearance: AppearanceSettings): void {
     comfortable: "0.5rem",
     spacious: "0.75rem",
   };
-  root.style.setProperty("--sidebar-density-padding", densityPaddingMap[appearance.sidebarDensity] || "0.5rem");
+  root.style.setProperty(
+    "--sidebar-density-padding",
+    densityPaddingMap[appearance.sidebarDensity] || "0.5rem"
+  );
 
   if (appearance.fontScaling && appearance.fontScaling !== 100) {
     root.style.fontSize = `${(appearance.fontScaling / 100) * 100}%`;
@@ -173,22 +156,42 @@ export function applyAppearanceSettings(appearance: AppearanceSettings): void {
 }
 
 export function useFluxSettings() {
-  const [settings, setSettingsState] = useState<FluxSettings>(() => loadSettings());
+  const storedSettings = useAppStore(
+    (state) => state.settings[APP_STATE_KEY] as FluxSettings | undefined
+  );
+  const storedTheme = useAppStore((state) => state.settings.theme);
+  const setSetting = useAppStore((state) => state.setSetting);
+  const settings = useMemo(
+    () =>
+      mergeSettings({
+        ...(storedSettings ?? loadSettings()),
+        appearance: {
+          ...(storedSettings ?? loadSettings()).appearance,
+          ...(storedTheme === "dark" || storedTheme === "light" || storedTheme === "system"
+            ? { theme: storedTheme }
+            : {}),
+        },
+      }),
+    [storedSettings, storedTheme]
+  );
 
   useEffect(() => {
     applyAppearanceSettings(settings.appearance);
-    const handler = () => {
-      setSettingsState(loadSettings());
-    };
-    window.addEventListener(CHANGE_EVENT, handler);
-    return () => window.removeEventListener(CHANGE_EVENT, handler);
-  }, []);
+    if (!storedSettings) setSetting(APP_STATE_KEY, settings);
+  }, [setSetting, settings, storedSettings]);
 
-  const updateSettings = (updater: (prev: FluxSettings) => FluxSettings) => {
-    const next = updater(loadSettings());
-    saveSettings(next);
-    setSettingsState(next);
-  };
+  const updateSettings = useCallback(
+    (updater: (prev: FluxSettings) => FluxSettings) => {
+      const current = mergeSettings(
+        useAppStore.getState().settings[APP_STATE_KEY] as FluxSettings | undefined
+      );
+      const next = mergeSettings(updater(current));
+      setSetting(APP_STATE_KEY, next);
+      setSetting("theme", next.appearance.theme);
+      saveSettings(next);
+    },
+    [setSetting]
+  );
 
   return { settings, updateSettings };
 }

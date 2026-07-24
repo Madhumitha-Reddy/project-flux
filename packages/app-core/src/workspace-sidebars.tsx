@@ -52,14 +52,11 @@ import { cn } from "@flux/shared-ui";
 
 export type LeftPane = "files" | "search" | "bookmarks";
 export type RightPane =
-  | "backlinks"
-  | "outgoing"
-  | "tags"
-  | "properties"
-  | "outline"
-  | "source-control";
+  "backlinks" | "outgoing" | "tags" | "properties" | "outline" | "source-control";
 
-export function getLeftOptions(plugins?: Record<string, boolean>): Array<{ id: LeftPane; label: string; icon: typeof Files }> {
+export function getLeftOptions(
+  plugins?: Record<string, boolean>
+): Array<{ id: LeftPane; label: string; icon: typeof Files }> {
   const options: Array<{ id: LeftPane; label: string; icon: typeof Files }> = [];
   if (!plugins || plugins["file-explorer"] !== false) {
     options.push({ id: "files", label: "Files", icon: Files });
@@ -73,7 +70,9 @@ export function getLeftOptions(plugins?: Record<string, boolean>): Array<{ id: L
   return options;
 }
 
-export function getRightOptions(plugins?: Record<string, boolean>): Array<{ id: RightPane; label: string; icon: typeof List }> {
+export function getRightOptions(
+  plugins?: Record<string, boolean>
+): Array<{ id: RightPane; label: string; icon: typeof List }> {
   const options: Array<{ id: RightPane; label: string; icon: typeof List }> = [];
 
   if (!plugins || plugins["backlinks"] !== false) {
@@ -97,7 +96,6 @@ export function getRightOptions(plugins?: Record<string, boolean>): Array<{ id: 
 
   return options;
 }
-
 
 function IconButton({
   label,
@@ -747,12 +745,12 @@ function SearchPane({
 }
 
 function BookmarksPane({
-  activeTitle: _activeTitle,
-  activePath: _activePath,
+  activeTitle,
+  activePath,
   bookmarks = [],
   groups = [],
   onOpenDocument,
-  onRemoveBookmark: _onRemoveBookmark,
+  onRemoveBookmark,
   onOpenAddBookmark,
   onCreateGroup,
 }: {
@@ -777,18 +775,26 @@ function BookmarksPane({
   const renderBookmarkRow = (item: BookmarkItem, plClass = "pl-7") => (
     <div
       key={item.id}
-      className="group/bookmark flex w-full items-center rounded-md py-1.5 text-left hover:bg-accent/60"
+      className={cn(
+        "group/bookmark flex w-full items-center rounded-md py-1.5 text-left hover:bg-accent/60",
+        (item.path === activePath || item.title === activeTitle) && "bg-accent/50"
+      )}
     >
       <button
         type="button"
         onClick={() => onOpenDocument(item.path || item.title)}
-        className={cn(
-          "flex min-w-0 flex-1 items-center gap-2 text-left outline-none",
-          plClass
-        )}
+        className={cn("flex min-w-0 flex-1 items-center gap-2 text-left outline-none", plClass)}
       >
         <Bookmark className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate">{item.title}</span>
+      </button>
+      <button
+        type="button"
+        aria-label={`Remove ${item.title} bookmark`}
+        onClick={() => onRemoveBookmark?.(item.id)}
+        className="mr-1 grid size-6 shrink-0 place-items-center rounded opacity-0 text-muted-foreground hover:bg-accent hover:text-foreground group-hover/bookmark:opacity-100 focus-visible:opacity-100"
+      >
+        <X className="size-3.5" />
       </button>
     </div>
   );
@@ -800,30 +806,23 @@ function BookmarksPane({
   return (
     <>
       <SidebarToolbar>
-        <IconButton
-          label="Bookmark active tab"
-          onClick={onOpenAddBookmark}
-        >
+        <IconButton label="Bookmark active tab" onClick={onOpenAddBookmark}>
           <BookmarkPlus className="size-3.5" />
         </IconButton>
-        <IconButton
-          label="New group"
-          onClick={handleCreateGroup}
-        >
+        <IconButton label="New group" onClick={handleCreateGroup}>
           <FolderPlus className="size-3.5" />
         </IconButton>
-        <IconButton
-          label="Collapse all"
-          onClick={() => setCollapsed(new Set(groups))}
-        >
+        <IconButton label="Collapse all" onClick={() => setCollapsed(new Set(groups))}>
           <ListCollapse className="size-3.5" />
         </IconButton>
       </SidebarToolbar>
       <div className="p-1.5 text-xs">
         {bookmarks.length === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-            No bookmarks added yet.<br />
-            Click <span className="font-medium text-foreground">Bookmark</span> in a note menu to add one.
+            No bookmarks added yet.
+            <br />
+            Click <span className="font-medium text-foreground">Bookmark</span> in a note menu to
+            add one.
           </div>
         ) : (
           <>

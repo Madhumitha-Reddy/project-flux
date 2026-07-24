@@ -228,8 +228,10 @@ export class BacklinkIndexStore {
     const directory = doc.path ? normalizeTarget(doc.path).split("/").slice(0, -1).join("/") : "";
     for (const link of rawLinks(doc.content)) {
       const target = normalizeTarget(link.target).toLocaleLowerCase();
-      const relative = directory ? normalizeTarget(`${directory}/${target}`).toLocaleLowerCase() : target;
-      
+      const relative = directory
+        ? normalizeTarget(`${directory}/${target}`).toLocaleLowerCase()
+        : target;
+
       const mention = {
         source: id,
         target: link.target,
@@ -263,18 +265,21 @@ export class BacklinkIndexStore {
   public getLinkedMentions(targetIdentifier: string): DocumentMention[] {
     const allDocs = [...this.fileMap.values()];
     const resolve = resolverFor(allDocs);
-    
+
     const targetDoc = allDocs.find(
-      (d) => documentId(d) === targetIdentifier || d.path === targetIdentifier || d.title === targetIdentifier
+      (d) =>
+        documentId(d) === targetIdentifier ||
+        d.path === targetIdentifier ||
+        d.title === targetIdentifier
     );
     const wantedId = targetDoc ? documentId(targetDoc) : targetIdentifier;
 
     const wantedSet = new Set<string>();
     wantedSet.add(normalizeTarget(targetIdentifier).toLocaleLowerCase());
-    
+
     if (targetDoc) {
       for (const alias of aliasesFor(targetDoc)) {
-         wantedSet.add(alias);
+        wantedSet.add(alias);
       }
     }
 
@@ -287,9 +292,9 @@ export class BacklinkIndexStore {
         for (const [sourceId, mentions] of sourceGroup.entries()) {
           // Exclude self-references
           if (wantedId === sourceId) continue;
-          
+
           const sourceDoc = this.fileMap.get(sourceId);
-          
+
           for (const m of mentions) {
             // Verify that this mention ACTUALLY resolves to our wanted target!
             const resolvedTarget = resolve(m.target, sourceDoc);
@@ -353,10 +358,18 @@ export function linkedMentionsFor(documents: DemoDocument[], targetIdentifier: s
 
 export function unlinkedMentionsFor(documents: DemoDocument[], targetIdentifier: string) {
   const targetDoc = documents.find(
-    (d) => documentId(d) === targetIdentifier || d.path === targetIdentifier || d.title === targetIdentifier
+    (d) =>
+      documentId(d) === targetIdentifier ||
+      d.path === targetIdentifier ||
+      d.title === targetIdentifier
   );
   const targetTitle =
-    targetDoc?.title ?? targetIdentifier.split("/").pop()?.replace(/\.(md|markdown)$/i, "") ?? targetIdentifier;
+    targetDoc?.title ??
+    targetIdentifier
+      .split("/")
+      .pop()
+      ?.replace(/\.(md|markdown)$/i, "") ??
+    targetIdentifier;
 
   const mentions: DocumentMention[] = [];
   if (!targetTitle.trim()) return mentions;

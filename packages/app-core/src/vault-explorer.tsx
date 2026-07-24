@@ -88,9 +88,16 @@ export function VaultExplorer({
 }: VaultExplorerProps) {
   const activeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (activeRef.current) {
-      activeRef.current.scrollIntoView({ block: "center", behavior: "auto" });
-    }
+    const row = activeRef.current;
+    if (!row) return;
+    row.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    row.animate(
+      [
+        { backgroundColor: "color-mix(in oklab, var(--primary) 28%, transparent)" },
+        { backgroundColor: "transparent" },
+      ],
+      { duration: 900, easing: "ease-out" }
+    );
   }, [activePath, expandedFolders]);
 
   const [selectedFolder, setSelectedFolder] = useState<string>();

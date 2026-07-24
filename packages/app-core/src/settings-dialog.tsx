@@ -24,12 +24,7 @@ import {
 } from "./settings-store";
 
 type SettingsPage =
-  | "general"
-  | "editor"
-  | "appearance"
-  | "keychain"
-  | "core-plugins"
-  | "community-plugins";
+  "general" | "editor" | "appearance" | "keychain" | "core-plugins" | "community-plugins";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -62,8 +57,6 @@ function SettingRow({
 function SettingDivider() {
   return <div className="h-px bg-[var(--layout-separator)]" />;
 }
-
-
 
 function Toggle({
   checked,
@@ -174,14 +167,12 @@ function SettingsNav({
   activePage: SettingsPage;
   onSelect: (page: SettingsPage) => void;
 }) {
-  let currentSection = "";
-
   return (
     <nav className="flex flex-col gap-0.5" aria-label="Settings navigation">
-      {navItems.map((item) => {
+      {navItems.map((item, index) => {
         const Icon = item.icon;
-        const showSection = item.section && item.section !== currentSection;
-        if (item.section) currentSection = item.section;
+        const showSection =
+          item.section !== undefined && item.section !== navItems[index - 1]?.section;
         return (
           <div key={item.id}>
             {showSection ? (
@@ -237,10 +228,7 @@ function GeneralPage({ vaultName }: GeneralPageProps) {
         </SettingRow>
         <SettingDivider />
 
-        <SettingRow
-          label="Launch behaviour"
-          description="Choose what FLUX opens when launching."
-        >
+        <SettingRow label="Launch behaviour" description="Choose what FLUX opens when launching.">
           <SelectControl
             value={gen.launchBehaviour}
             onChange={(val) => updateGeneral("launchBehaviour", val)}
@@ -403,10 +391,7 @@ function EditorPage() {
           />
         </SettingRow>
         <SettingDivider />
-        <SettingRow
-          label="Line Numbers"
-          description="Show line numbers in the editor gutter."
-        >
+        <SettingRow label="Line Numbers" description="Show line numbers in the editor gutter.">
           <Toggle
             checked={ed.lineNumbers}
             onChange={(val) => updateEd("lineNumbers", val)}
@@ -414,10 +399,7 @@ function EditorPage() {
           />
         </SettingRow>
         <SettingDivider />
-        <SettingRow
-          label="Spell Check"
-          description="Enable browser spell checking on editor text."
-        >
+        <SettingRow label="Spell Check" description="Enable browser spell checking on editor text.">
           <Toggle
             checked={ed.spellCheck}
             onChange={(val) => updateEd("spellCheck", val)}
@@ -425,7 +407,10 @@ function EditorPage() {
           />
         </SettingRow>
         <SettingDivider />
-        <SettingRow label="Default font size" description="Base font size for editor text in pixels.">
+        <SettingRow
+          label="Default font size"
+          description="Base font size for editor text in pixels."
+        >
           <NumberInput
             value={ed.fontSize}
             onChange={(val) => updateEd("fontSize", val)}
@@ -486,7 +471,10 @@ function AppearancePage() {
           />
         </SettingRow>
         <SettingDivider />
-        <SettingRow label="Accent colour" description="Choose the accent colour used throughout the app.">
+        <SettingRow
+          label="Accent colour"
+          description="Choose the accent colour used throughout the app."
+        >
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -498,7 +486,9 @@ function AppearancePage() {
             <label className="relative flex cursor-pointer items-center justify-center">
               <input
                 type="color"
-                value={app.accentColor && app.accentColor !== "default" ? app.accentColor : "#18181b"}
+                value={
+                  app.accentColor && app.accentColor !== "default" ? app.accentColor : "#18181b"
+                }
                 onChange={(e) => updateApp("accentColor", e.target.value)}
                 className="absolute inset-0 size-full cursor-pointer opacity-0"
               />
@@ -517,7 +507,10 @@ function AppearancePage() {
         </SettingRow>
 
         <SettingDivider />
-        <SettingRow label="Sidebar density" description="Spacing and padding for sidebar navigation lists.">
+        <SettingRow
+          label="Sidebar density"
+          description="Spacing and padding for sidebar navigation lists."
+        >
           <SelectControl
             value={app.sidebarDensity}
             onChange={(val) => updateApp("sidebarDensity", val)}
@@ -529,7 +522,10 @@ function AppearancePage() {
           />
         </SettingRow>
         <SettingDivider />
-        <SettingRow label="Font scaling" description="Scale text size across the entire FLUX user interface.">
+        <SettingRow
+          label="Font scaling"
+          description="Scale text size across the entire FLUX user interface."
+        >
           <SelectControl
             value={String(app.fontScaling)}
             onChange={(val) => updateApp("fontScaling", Number(val))}
@@ -598,7 +594,10 @@ function KeychainPage() {
         {/* Auth State Card - Small 1-line info */}
         <div className="flex items-center gap-2.5 rounded-lg border bg-background/50 px-3.5 py-2.5 text-xs text-muted-foreground [border-color:var(--layout-separator)]">
           <Shield className="size-4 shrink-0 text-primary" />
-          <span className="truncate">Credentials are encrypted at rest using system-native keychain (macOS Keychain / Windows Credential Manager).</span>
+          <span className="truncate">
+            Credentials are encrypted at rest using system-native keychain (macOS Keychain / Windows
+            Credential Manager).
+          </span>
         </div>
 
         {/* Credentials List */}
@@ -759,7 +758,8 @@ const pluginRegistry: PluginRegistryItem[] = [
   {
     id: "graph-view",
     name: "Graph View",
-    description: "Visualize connections and relationships between your notes in an interactive graph.",
+    description:
+      "Visualize connections and relationships between your notes in an interactive graph.",
   },
   {
     id: "live-preview",
@@ -817,7 +817,8 @@ function CorePluginsPage() {
     const nextVal = !pluginsState[id];
     updateSettings((prev) => {
       const nextPlugins = { ...prev.plugins, [id]: nextVal };
-      const nextEditor = id === "live-preview" ? { ...prev.editor, livePreview: nextVal } : prev.editor;
+      const nextEditor =
+        id === "live-preview" ? { ...prev.editor, livePreview: nextVal } : prev.editor;
       return {
         ...prev,
         editor: nextEditor,
@@ -901,11 +902,7 @@ function CommunityPluginsPage() {
           label="Community plugins"
           description="Enable community plugins to customize your workspace with third-party extensions. Note: Community plugins can access local files and write data."
         >
-          <Toggle
-            checked={isEnabled}
-            onChange={toggleCommunity}
-            label="Community plugins"
-          />
+          <Toggle checked={isEnabled} onChange={toggleCommunity} label="Community plugins" />
         </SettingRow>
 
         {isEnabled && (
