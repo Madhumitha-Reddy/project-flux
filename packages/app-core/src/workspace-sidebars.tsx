@@ -1014,6 +1014,7 @@ function RightContent({
   const [descending, setDescending] = useState(false);
   const [collapsedResults, setCollapsedResults] = useState(false);
   const [moreContext, setMoreContext] = useState(false);
+  const [collapsedMentionGroups, setCollapsedMentionGroups] = useState<Record<string, boolean>>({});
   const [references, setReferences] = useState<DocumentReferences>();
   const [referencePath, setReferencePath] = useState("");
   const [facets, setFacets] = useState<VaultFacets>();
@@ -1157,6 +1158,8 @@ function RightContent({
   }
   if (pane === "backlinks") {
     const activeTitle = activeDocument?.path ?? activeDocument?.title ?? "Untitled";
+    const activeName = activeDocument.title.replace(/\.[^.]+$/, "");
+    const mentionHighlightTerms = [...new Set([activeName, activeDocument.title].filter(Boolean))];
     const groupMentions = (mentions: DocumentMention[]) => {
       const grouped = new Map<string, DocumentMention[]>();
       for (const mention of mentions) {
@@ -1186,36 +1189,73 @@ function RightContent({
       : unlinkedMentionsFor(documents, activeDocument.title);
     const linked = groupMentions(linkedMentions);
     const unlinked = groupMentions(unlinkedMentions);
+    const mentionCount = (groups: Array<[string, DocumentMention[]]>) =>
+      groups.reduce((total, [, mentions]) => total + mentions.length, 0);
     const mentionRows = (groups: Array<[string, DocumentMention[]]>, linkedMention: boolean) =>
-      groups.map(([source, mentions]) => (
-        <div
-          key={`${linkedMention ? "linked" : "unlinked"}-${source}`}
-          className="group w-full rounded-md px-1 py-1"
-        >
-          <button
-            type="button"
-            onClick={() => onOpenReference?.(source, mentions[0]?.line ?? 1)}
-            className="flex w-full items-center gap-2 rounded-md py-1 text-left hover:bg-accent/60"
-          >
-            <Network className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate">{source}</span>
-            <span className="text-[10px] text-muted-foreground">{mentions.length}</span>
-          </button>
-          {moreContext
-            ? mentions.slice(0, 4).map((mention) => (
-                <button
-                  type="button"
-                  key={`${mention.line}-${mention.excerpt}`}
-                  onClick={() => onOpenReference?.(source, mention.line)}
-                  className="ml-5 mt-1 line-clamp-2 block border-l pl-2 text-left text-[10px] leading-4 text-muted-foreground hover:text-foreground [border-color:var(--layout-separator)]"
-                >
-                  <span className="mr-1 opacity-60">L{mention.line}</span>
-                  {mention.excerpt}
-                </button>
-              ))
-            : null}
-        </div>
-      ));
+      groups.map(([source, mentions]) => {
+        const groupKey = `${linkedMention ? "linked" : "unlinked"}-${source}`;
+        const collapsed = collapsedMentionGroups[groupKey] ?? false;
+        const sourceName =
+          source
+            .split("/")
+            .at(-1)
+            ?.replace(/\.[^.]+$/, "") ?? source;
+        return (
+          <div key={groupKey} className="w-full py-1">
+            <button
+              type="button"
+              aria-expanded={!collapsed}
+              onClick={() =>
+                setCollapsedMentionGroups((current) => ({
+                  ...current,
+                  [groupKey]: !collapsed,
+                }))
+              }
+              className="flex w-full items-start gap-1.5 rounded-md px-1 py-1.5 text-left outline-none hover:bg-accent/60 focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <ChevronRight
+                className={cn(
+                  "mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform",
+                  !collapsed && "rotate-90"
+                )}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium text-foreground">{sourceName}</span>
+                <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">
+                  {source}
+                </span>
+              </span>
+              <span className="pt-0.5 text-[10px] text-muted-foreground">{mentions.length}</span>
+            </button>
+            {collapsed
+              ? null
+              : mentions.map((mention) => (
+                  <button
+                    type="button"
+                    key={`${mention.line}-${mention.excerpt}`}
+                    onClick={() => onOpenReference?.(source, mention.line)}
+                    className="mt-1 block w-full rounded-md px-2 py-2 text-left text-[11px] text-muted-foreground outline-none hover:bg-accent/60 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <span className="mb-1 block font-mono text-[9px] opacity-60">
+                      Line {mention.line}
+                    </span>
+                    <span
+                      className={cn(
+                        "block border-l pl-2 leading-4 [border-color:var(--layout-separator)]",
+                        moreContext ? "line-clamp-4" : "line-clamp-2"
+                      )}
+                    >
+                      <HighlightedText
+                        text={mention.excerpt}
+                        terms={mentionHighlightTerms}
+                        matchCase={false}
+                      />
+                    </span>
+                  </button>
+                ))}
+          </div>
+        );
+      });
     return (
       <SidebarPane
         controls={
@@ -1259,7 +1299,7 @@ function RightContent({
           {loadError ? <p className="py-2 text-destructive">{loadError}</p> : null}
           <div className="flex items-center justify-between py-1 font-medium text-foreground">
             <span>Linked mentions</span>
-            <span className="text-[10px] text-muted-foreground">{linked.length}</span>
+            <span className="text-[10px] text-muted-foreground">{mentionCount(linked)}</span>
           </div>
           {collapsedResults ? null : linked.length ? (
             mentionRows(linked, true)
@@ -1268,7 +1308,7 @@ function RightContent({
           )}
           <div className="mt-3 flex items-center justify-between py-1 font-medium text-muted-foreground">
             <span>Unlinked mentions</span>
-            <span className="text-[10px]">{unlinked.length}</span>
+            <span className="text-[10px]">{mentionCount(unlinked)}</span>
           </div>
           {collapsedResults ? null : unlinked.length ? (
             mentionRows(unlinked, false)
