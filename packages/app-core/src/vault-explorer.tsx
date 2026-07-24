@@ -21,6 +21,8 @@ import type { DemoDocument } from "./markdown-editor";
 interface VaultExplorerProps {
   entries: FileEntry[];
   activePath?: string;
+  revealPath?: string;
+  onClearRevealPath?: () => void;
   onOpen: (path: string) => void;
   onCreateNote: (parent: string, name: string) => void;
   onCreateFolder: (parent: string, name: string) => void;
@@ -81,14 +83,17 @@ export function VaultExplorer({
   onOpenTrash,
   onPreview,
   documents,
+  revealPath,
+  onClearRevealPath,
   expandedFolders,
   onExpandedFoldersChange,
   onExpandFolder,
   onSelectPath,
 }: VaultExplorerProps) {
   const activeRef = useRef<HTMLButtonElement>(null);
+  const revealRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    const row = activeRef.current;
+    const row = (revealPath ? revealRef.current : null) ?? activeRef.current;
     if (!row) return;
     row.scrollIntoView({ behavior: "smooth", block: "nearest" });
     row.animate(
@@ -98,7 +103,7 @@ export function VaultExplorer({
       ],
       { duration: 900, easing: "ease-out" }
     );
-  }, [activePath, expandedFolders]);
+  }, [activePath, expandedFolders, revealPath]);
 
   const [selectedFolder, setSelectedFolder] = useState<string>();
   const [localExpandedPaths, setLocalExpandedPaths] = useState<Set<string>>(new Set());
@@ -281,11 +286,12 @@ export function VaultExplorer({
     }
     const directory = entry.kind === "directory";
     const expanded = expandedPaths.has(entry.path);
+    const isRevealTarget = revealPath === entry.path;
     const presentation = filePresentation(entry);
     const metadata = entryMetadata(entry);
     const row = (
       <button
-        ref={entry.path === activePath ? activeRef : undefined}
+        ref={entry.path === activePath ? activeRef : entry.path === revealPath ? revealRef : undefined}
         type="button"
         role="treeitem"
         data-flux-drop-folder={directory ? entry.path : undefined}
@@ -297,6 +303,7 @@ export function VaultExplorer({
             suppressClickRef.current = false;
             return;
           }
+          onClearRevealPath?.();
           if (!directory) {
             const separator = entry.path.lastIndexOf("/");
             setSelectedFolder(separator < 0 ? "" : entry.path.slice(0, separator));
@@ -305,7 +312,6 @@ export function VaultExplorer({
             return;
           }
           setSelectedFolder(entry.path);
-          onSelectPath?.(entry.path);
           updateExpandedPaths((current) => {
             const next = new Set(current);
             if (next.has(entry.path)) next.delete(entry.path);
@@ -372,7 +378,9 @@ export function VaultExplorer({
             ? "bg-primary/10 text-foreground ring-1 ring-inset ring-primary/50"
             : entry.path === activePath
               ? "bg-sidebar-selected text-sidebar-accent-foreground font-medium ring-2 ring-[var(--layout-separator)] ring-inset"
-              : "text-muted-foreground"
+              : isRevealTarget
+                ? "bg-primary/10 text-foreground ring-1 ring-inset ring-primary/50"
+                : "text-muted-foreground"
         }`}
         style={{ paddingLeft: 8 + depth * 16 }}
       >
@@ -601,7 +609,11 @@ export function VaultExplorer({
         role="tree"
         aria-label="Files"
         onClick={(event) => {
-          if (event.currentTarget === event.target) setSelectedFolder("");
+          if (event.currentTarget === event.target) {
+            setSelectedFolder("");
+            onSelectPath?.("");
+            onClearRevealPath?.();
+          }
         }}
       >
         {renderInlineEdit("", 0)}

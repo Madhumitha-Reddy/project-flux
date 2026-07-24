@@ -216,8 +216,21 @@ export class BacklinkIndexStore {
     mentions.push(mention);
   }
 
-  private updateSingleDocumentInternal(doc: DemoDocument) {
+  private updateSingleDocumentInternal(doc: DemoDocument): boolean {
     const id = documentId(doc);
+    const previous = this.fileMap.get(id);
+    if (
+      previous &&
+      previous.contentHash &&
+      doc.contentHash &&
+      previous.contentHash === doc.contentHash
+    ) {
+      return false;
+    }
+    if (previous && previous.content === doc.content) {
+      return false;
+    }
+
     this.fileMap.set(id, doc);
 
     // Clean up old references originating from this source
@@ -243,6 +256,8 @@ export class BacklinkIndexStore {
         this.addMention(relative, id, mention);
       }
     }
+
+    return true;
   }
 
   public rebuild(documents: DemoDocument[]) {
@@ -257,9 +272,23 @@ export class BacklinkIndexStore {
   }
 
   public updateSingleDocument(doc: DemoDocument) {
-    this.updateSingleDocumentInternal(doc);
-    this.cacheVersion += 1;
-    this.notify();
+    if (this.updateSingleDocumentInternal(doc)) {
+      this.cacheVersion += 1;
+      this.notify();
+    }
+  }
+
+  public updateDocuments(documents: DemoDocument[]) {
+    let updated = false;
+    for (const doc of documents) {
+      if (this.updateSingleDocumentInternal(doc)) {
+        updated = true;
+      }
+    }
+    if (updated) {
+      this.cacheVersion += 1;
+      this.notify();
+    }
   }
 
   public getLinkedMentions(targetIdentifier: string): DocumentMention[] {

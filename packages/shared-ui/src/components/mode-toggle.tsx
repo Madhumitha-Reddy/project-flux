@@ -6,12 +6,15 @@ import { useTheme } from "./theme-provider";
 
 function isTypingTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
-  return (
+  if (
     target.isContentEditable ||
     target instanceof HTMLInputElement ||
     target instanceof HTMLTextAreaElement ||
     target instanceof HTMLSelectElement
-  );
+  ) {
+    return true;
+  }
+  return Boolean(target.closest(".cm-editor, .cm-content"));
 }
 
 export function ModeToggle({ className }: { className?: string }) {

@@ -873,6 +873,8 @@ function LeftSidebar({
   onCreateNote,
   vaultEntries,
   activePath,
+  revealPath,
+  onClearRevealPath,
   onCreateFolder,
   onMovePath,
   onRenamePath,
@@ -901,6 +903,8 @@ function LeftSidebar({
   onCreateNote: (parent?: string, name?: string) => void;
   vaultEntries?: FileEntry[];
   activePath?: string;
+  revealPath?: string;
+  onClearRevealPath?: () => void;
   onCreateFolder?: (parent: string, name: string) => void;
   onMovePath?: (sourcePath: string, destinationPath: string) => void;
   onRenamePath?: (path: string, name: string) => void;
@@ -933,6 +937,8 @@ function LeftSidebar({
               entries={vaultEntries}
               documents={documents}
               activePath={activePath}
+              revealPath={revealPath}
+              onClearRevealPath={onClearRevealPath}
               onOpen={onOpenDocument}
               onCreateNote={(parent, name) => onCreateNote(parent, name)}
               onCreateFolder={(parent, name) => onCreateFolder?.(parent, name)}
@@ -1631,6 +1637,8 @@ export function WorkspaceLeftSidebar({
   onCreateNote,
   vaultEntries,
   activePath,
+  revealPath,
+  onClearRevealPath,
   onCreateFolder,
   onMovePath,
   onRenamePath,
@@ -1659,6 +1667,8 @@ export function WorkspaceLeftSidebar({
   onCreateNote: (parent?: string, name?: string) => void;
   vaultEntries?: FileEntry[];
   activePath?: string;
+  revealPath?: string;
+  onClearRevealPath?: () => void;
   onCreateFolder?: (parent: string, name: string) => void;
   onMovePath?: (sourcePath: string, destinationPath: string) => void;
   onRenamePath?: (path: string, name: string) => void;
@@ -1689,6 +1699,8 @@ export function WorkspaceLeftSidebar({
       onCreateNote={onCreateNote}
       vaultEntries={vaultEntries}
       activePath={activePath}
+      revealPath={revealPath}
+      onClearRevealPath={onClearRevealPath}
       onCreateFolder={onCreateFolder}
       onMovePath={onMovePath}
       onRenamePath={onRenamePath}

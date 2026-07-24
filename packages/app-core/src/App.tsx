@@ -184,6 +184,9 @@ function sandboxedPluginDocument(html: string) {
   return `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:">${html}`;
 }
 
+const bookmarkItemsKey = (vaultId?: string) => `flux-bookmarks-items:${vaultId ?? "default"}`;
+const bookmarkGroupsKey = (vaultId?: string) => `flux-bookmarks-groups:${vaultId ?? "default"}`;
+
 function restoreWorkspaceRoot(
   node: WorkspaceNode | undefined,
   tabIds: Set<number>
@@ -632,7 +635,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const [pdfExportDocument, setPdfExportDocument] = useState<DemoDocument | null>(null);
   const [pdfExportOpen, setPdfExportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [sidebarSelectedPath, setSidebarSelectedPath] = useState<string | undefined>();
+  const [sidebarRevealPath, setSidebarRevealPath] = useState<string | undefined>();
+  const revealPathTimerRef = useRef<number | undefined>(undefined);
+  const appSettings = useAppStore((state) => state.settings);
   const bookmarkVaultId = vault?.id ?? "default";
   const bookmarks =
     useAppStore((state) => state.bookmarksByVault[bookmarkVaultId]) ?? EMPTY_BOOKMARKS;
@@ -848,15 +853,35 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   }, [runtime.client, sidebarIndexRevision, vault]);
 
   useEffect(() => {
-    setStoredBookmarks(bookmarkVaultId, loadBookmarks(vault?.id));
-    setStoredBookmarkGroups(bookmarkVaultId, loadBookmarkGroups(vault?.id));
-  }, [bookmarkVaultId, setStoredBookmarkGroups, setStoredBookmarks, vault?.id]);
+    const itemsKey = bookmarkItemsKey(vault?.id);
+    const groupsKey = bookmarkGroupsKey(vault?.id);
+    const remoteItems = appSettings[itemsKey];
+    const remoteGroups = appSettings[groupsKey];
+
+    if (runtime.statePersistence && Array.isArray(remoteItems)) {
+      setStoredBookmarks(bookmarkVaultId, remoteItems as BookmarkItem[]);
+    } else {
+      setStoredBookmarks(bookmarkVaultId, loadBookmarks(vault?.id));
+    }
+
+    if (runtime.statePersistence && Array.isArray(remoteGroups)) {
+      setStoredBookmarkGroups(bookmarkVaultId, remoteGroups as string[]);
+    } else {
+      setStoredBookmarkGroups(bookmarkVaultId, loadBookmarkGroups(vault?.id));
+    }
+  }, [appSettings, bookmarkVaultId, runtime.statePersistence, setStoredBookmarkGroups, setStoredBookmarks, vault?.id]);
 
   const updateBookmarks = (updater: (current: BookmarkItem[]) => BookmarkItem[]) => {
     const current = useAppStore.getState().bookmarksByVault[bookmarkVaultId] ?? EMPTY_BOOKMARKS;
     const next = updater(current);
     setStoredBookmarks(bookmarkVaultId, next);
-    saveBookmarks(next, vault?.id);
+    if (runtime.statePersistence) {
+      void runtime.statePersistence
+        .saveAppSetting(bookmarkItemsKey(vault?.id), next)
+        .catch(() => undefined);
+    } else {
+      saveBookmarks(next, vault?.id);
+    }
   };
 
   const updateBookmarkGroups = (updater: (current: string[]) => string[]) => {
@@ -864,7 +889,13 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       useAppStore.getState().bookmarkGroupsByVault[bookmarkVaultId] ?? DEFAULT_BOOKMARK_GROUPS;
     const next = updater(current);
     setStoredBookmarkGroups(bookmarkVaultId, next);
-    saveBookmarkGroups(next, vault?.id);
+    if (runtime.statePersistence) {
+      void runtime.statePersistence
+        .saveAppSetting(bookmarkGroupsKey(vault?.id), next)
+        .catch(() => undefined);
+    } else {
+      saveBookmarkGroups(next, vault?.id);
+    }
   };
 
   const handleOpenAddBookmark = (target?: { title: string; path?: string } | null) => {
@@ -1399,10 +1430,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       );
     }
     setVaultDocuments(resolved);
-    // Update the index with the synchronously loaded files, without clearing it
-    for (const doc of resolved) {
-      globalBacklinkStore.updateSingleDocument(doc);
-    }
+    globalBacklinkStore.rebuild(resolved);
 
     // Background incremental indexing for ALL remaining markdown files
     // Ensures instant startup while building full-vault backlinks without blocking UI
@@ -1416,8 +1444,8 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       const CHUNK = 50;
       while (index < backgroundEntries.length) {
         const chunk = backgroundEntries.slice(index, index + CHUNK);
-        const chunkLoaded = await Promise.all(
-          chunk.map(async (entry) => {
+        const chunkLoaded = await Promise.all<DemoDocument | null>(
+          chunk.map(async (entry): Promise<DemoDocument | null> => {
             try {
               const file = await runtime.client!.readFile(vaultId, entry.path);
               return {
@@ -1431,9 +1459,10 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             }
           })
         );
-        for (const doc of chunkLoaded) {
-          if (doc) globalBacklinkStore.updateSingleDocument(doc);
-        }
+        const chunkDocs = chunkLoaded.filter(
+          (doc): doc is DemoDocument => doc !== null
+        );
+        if (chunkDocs.length) globalBacklinkStore.updateDocuments(chunkDocs);
         index += CHUNK;
         await new Promise((r) => setTimeout(r, 50));
       }
@@ -2507,7 +2536,12 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       return [...next].sort();
     });
     setLeftSidebarPane("files");
-    setSidebarSelectedPath(folder);
+    setSidebarRevealPath(folder);
+    if (revealPathTimerRef.current) window.clearTimeout(revealPathTimerRef.current);
+    revealPathTimerRef.current = window.setTimeout(() => {
+      setSidebarRevealPath(undefined);
+      revealPathTimerRef.current = undefined;
+    }, 1800);
   };
 
   const commandsFor = (tab: WorkspaceTab, leafId = activeLeafId): FluxTabCommands => {
@@ -2624,7 +2658,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
 
   const revealSidebarPath = (targetPath?: string) => {
     if (!targetPath) return;
-    setSidebarSelectedPath(targetPath);
+    setSidebarRevealPath(targetPath);
     const parts = targetPath.split("/").filter(Boolean).slice(0, -1);
     if (parts.length === 0) return;
     const ancestors = parts.map((_, index) => parts.slice(0, index + 1).join("/"));
@@ -3530,8 +3564,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             leftSidebar={
               <WorkspaceLeftSidebar
                 activeTitle={visibleActiveTab?.title ?? ""}
-                activePath={sidebarSelectedPath ?? activeFilePath}
-                onSelectPath={setSidebarSelectedPath}
+                activePath={activeFilePath}
+                revealPath={sidebarRevealPath}
+                onClearRevealPath={() => setSidebarRevealPath(undefined)}
                 pane={effectiveLeftSidebarPane}
                 documents={documents}
                 onOpenDocument={(path) => void openDocument(path)}

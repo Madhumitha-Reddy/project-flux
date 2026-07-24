@@ -98,7 +98,6 @@ export const DEFAULT_SETTINGS: FluxSettings = {
 };
 
 const STORAGE_KEY = "flux-app-settings-v1";
-const APP_STATE_KEY = "fluxSettings";
 
 function mergeSettings(settings?: Partial<FluxSettings>): FluxSettings {
   return {
@@ -109,6 +108,8 @@ function mergeSettings(settings?: Partial<FluxSettings>): FluxSettings {
     plugins: { ...DEFAULT_SETTINGS.plugins, ...settings?.plugins },
   };
 }
+
+export const APP_STATE_KEY = "fluxSettings";
 
 export function loadSettings(): FluxSettings {
   if (typeof window === "undefined") return DEFAULT_SETTINGS;
