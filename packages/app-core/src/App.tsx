@@ -1181,8 +1181,14 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       return;
     }
 
+    const index = leaf.tabIds.indexOf(tabId);
     const tabIds = leaf.tabIds.filter((id) => id !== tabId);
-    const nextActiveId = leaf.activeTabId === tabId ? tabIds[0] : leaf.activeTabId;
+    const nextActiveId =
+      leaf.activeTabId === tabId
+        ? index > 0
+          ? leaf.tabIds[index - 1]
+          : tabIds[0]
+        : leaf.activeTabId;
     const nextActiveTab = tabs.find((candidate) => candidate.id === nextActiveId);
     const nextRoot = mapWorkspaceLeaf(workspaceRoot, leafId, (current) => ({
       ...current,
