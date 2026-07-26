@@ -95,14 +95,7 @@ export function VaultExplorer({
   useEffect(() => {
     const row = (revealPath ? revealRef.current : null) ?? activeRef.current;
     if (!row) return;
-    row.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    row.animate(
-      [
-        { backgroundColor: "color-mix(in oklab, var(--primary) 28%, transparent)" },
-        { backgroundColor: "transparent" },
-      ],
-      { duration: 900, easing: "ease-out" }
-    );
+    row.scrollIntoView({ behavior: "auto", block: "nearest" });
   }, [activePath, expandedFolders, revealPath]);
 
   const [selectedFolder, setSelectedFolder] = useState<string>();
@@ -373,7 +366,7 @@ export function VaultExplorer({
           setDropTarget(undefined);
         }}
         onPointerLeave={() => hidePreview(entry.path)}
-        className={`flex w-full min-w-0 max-w-full select-none items-center gap-1.5 overflow-hidden rounded-md py-1.5 pr-2 text-left text-xs outline-none transition-colors duration-100 hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring/50 motion-reduce:transition-none ${
+        className={`flex w-full min-w-0 max-w-full select-none items-center gap-1.5 overflow-hidden rounded-md py-1.5 pr-2 text-left text-xs outline-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring/50 ${
           dropTarget === entry.path
             ? "bg-primary/10 text-foreground ring-1 ring-inset ring-primary/50"
             : entry.path === activePath
