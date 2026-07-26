@@ -1,5 +1,13 @@
 import type { ReactNode } from "react";
-import { Check, ChevronsUpDown, GitBranch, Settings2, Vault } from "lucide-react";
+import {
+  Check,
+  ChevronsUpDown,
+  CpuIcon,
+  GitBranch,
+  MemoryStick,
+  Settings2,
+  Vault,
+} from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 
 export interface FluxVaultOption {
@@ -118,10 +126,14 @@ export function FluxStatusBar({
         {cpuPercent !== undefined && memoryMB !== undefined ? (
           <>
             <span
-              className="shrink-0 tabular-nums"
+              className="flex shrink-0 items-center gap-1 tabular-nums"
               title="Total CPU and working memory used by FLUX processes"
             >
-              CPU {cpuPercent.toFixed(1)}% · {Math.round(memoryMB).toLocaleString()} MB
+              <CpuIcon className="size-3.5" />
+              <span>CPU {cpuPercent.toFixed(1)}%</span>
+              <span aria-hidden="true">·</span>
+              <MemoryStick className="size-3.5" />
+              <span>{Math.round(memoryMB).toLocaleString()} MB</span>
             </span>
             <StatusSeparator />
           </>

@@ -490,7 +490,22 @@ func (s *Service) PurgeTrash(vaultID string, retentionDays int) (domain.PurgeRes
 }
 
 func (s *Service) moveFile(context *vault.Context, vaultID, sourcePath, destinationPath string) (domain.FileEntry, error) {
-	entry, err := context.Files.Move(sourcePath, destinationPath)
+	var entry domain.FileEntry
+	var err error
+	info := context.VaultInfo()
+	if context.Index != nil && info.State == domain.VaultStateActive {
+		var entries []domain.FileEntry
+		var linkSources []string
+		entries, err = context.Index.ListFiles()
+		if err == nil {
+			linkSources, err = context.Index.LinkSourcePaths()
+		}
+		if err == nil {
+			entry, err = context.Files.MoveIndexed(sourcePath, destinationPath, entries, linkSources)
+		}
+	} else {
+		entry, err = context.Files.Move(sourcePath, destinationPath)
+	}
 	if errors.Is(err, files.ErrLinkRewrite) {
 		s.vaults.Degrade(vaultID)
 		s.moveIndex(context, vaultID, sourcePath, entry)

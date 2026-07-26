@@ -133,18 +133,7 @@ export function VaultExplorer({
     loading: boolean;
   }>();
   const previewRequestRef = useRef(0);
-  const pointerDragRef = useRef<
-    | {
-        source: string;
-        startX: number;
-        startY: number;
-        pointerId: number;
-        dragging: boolean;
-        target?: string;
-      }
-    | undefined
-  >(undefined);
-  const suppressClickRef = useRef(false);
+  const dragSourceRef = useRef<string | undefined>(undefined);
   const cancelInlineEditRef = useRef(false);
   const [inlineEdit, setInlineEdit] = useState<
     | { kind: "note" | "folder"; parent: string; value: string }
@@ -306,11 +295,8 @@ export function VaultExplorer({
         aria-expanded={directory ? expanded : undefined}
         aria-selected={entry.path === activePath}
         aria-label={`${presentation.label}, ${metadata}`}
+        draggable
         onClick={() => {
-          if (suppressClickRef.current) {
-            suppressClickRef.current = false;
-            return;
-          }
           onClearRevealPath?.();
           if (!directory) {
             const separator = entry.path.lastIndexOf("/");
@@ -331,54 +317,44 @@ export function VaultExplorer({
             return next;
           });
         }}
-        onPointerDown={(event) => {
-          if (event.button !== 0) return;
-          pointerDragRef.current = {
-            source: entry.path,
-            startX: event.clientX,
-            startY: event.clientY,
-            pointerId: event.pointerId,
-            dragging: false,
-          };
-          event.currentTarget.setPointerCapture(event.pointerId);
+        onDragStart={(event) => {
+          dragSourceRef.current = entry.path;
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("application/x-flux-path", entry.path);
+          event.dataTransfer.setData("text/plain", entry.path);
         }}
         onPointerEnter={(event) => {
           if (event.metaKey || event.ctrlKey) void showPreview(entry);
         }}
         onPointerMove={(event) => {
-          const drag = pointerDragRef.current;
-          if (drag?.pointerId === event.pointerId) {
-            const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
-            if (distance >= 5) drag.dragging = true;
-            if (drag.dragging) {
-              event.preventDefault();
-              const target = document
-                .elementFromPoint(event.clientX, event.clientY)
-                ?.closest<HTMLElement>("[data-flux-drop-folder]")?.dataset.fluxDropFolder;
-              drag.target =
-                target !== undefined && canMoveTo(drag.source, target) ? target : undefined;
-              setDropTarget(drag.target);
-            }
-          }
           if ((event.metaKey || event.ctrlKey) && preview?.path !== entry.path)
             void showPreview(entry);
         }}
-        onPointerUp={(event) => {
-          const drag = pointerDragRef.current;
-          if (drag?.pointerId !== event.pointerId) return;
-          event.currentTarget.releasePointerCapture(event.pointerId);
-          pointerDragRef.current = undefined;
-          setDropTarget(undefined);
-          if (!drag.dragging || drag.target === undefined) return;
+        onDragOver={(event) => {
+          if (!directory) return;
+          const source =
+            dragSourceRef.current ??
+            event.dataTransfer.getData("application/x-flux-path");
+          if (!source || !canMoveTo(source, entry.path)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setDropTarget(entry.path);
+        }}
+        onDrop={(event) => {
+          if (!directory) return;
+          const source =
+            dragSourceRef.current ??
+            event.dataTransfer.getData("application/x-flux-path");
+          if (!source || !canMoveTo(source, entry.path)) return;
           event.preventDefault();
           event.stopPropagation();
-          suppressClickRef.current = true;
-          const name = drag.source.slice(drag.source.lastIndexOf("/") + 1);
-          onMove(drag.source, drag.target ? `${drag.target}/${name}` : name);
-          setSelectedFolder(drag.target);
+          setDropTarget(undefined);
+          const name = source.slice(source.lastIndexOf("/") + 1);
+          onMove(source, `${entry.path}/${name}`);
+          setSelectedFolder(entry.path);
         }}
-        onPointerCancel={() => {
-          pointerDragRef.current = undefined;
+        onDragEnd={() => {
+          dragSourceRef.current = undefined;
           setDropTarget(undefined);
         }}
         onPointerLeave={() => hidePreview(entry.path)}
@@ -619,6 +595,27 @@ export function VaultExplorer({
         className={`flux-editor-scroll flux-sidebar-scroll min-h-0 min-w-0 flex-1 overflow-x-clip overflow-y-auto p-1.5 ${dropTarget === "" ? "bg-primary/5 ring-1 ring-inset ring-primary/40" : ""}`}
         role="tree"
         aria-label="Files"
+        onDragOver={(event) => {
+          const source =
+            dragSourceRef.current ??
+            event.dataTransfer.getData("application/x-flux-path");
+          if (!source || !canMoveTo(source, "")) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setDropTarget("");
+        }}
+        onDrop={(event) => {
+          const source =
+            dragSourceRef.current ??
+            event.dataTransfer.getData("application/x-flux-path");
+          if (!source || !canMoveTo(source, "")) return;
+          event.preventDefault();
+          const name = source.slice(source.lastIndexOf("/") + 1);
+          onMove(source, name);
+          setSelectedFolder("");
+          dragSourceRef.current = undefined;
+          setDropTarget(undefined);
+        }}
         onClick={(event) => {
           if (event.currentTarget === event.target) {
             setSelectedFolder("");

@@ -54,3 +54,26 @@ correctly rejects it.
 
 If bridge reports vault already open elsewhere, app-data paths differ. If tools are rejected as
 invalid names, stale server binary still advertises dotted names; restart MCP process.
+
+## Production target
+
+Current `--vault` configuration is a development/headless override. Desktop production will use
+connections created under **Settings → MCP connections**.
+
+Each connection has:
+
+- Display name.
+- Opaque connection ID and one-time bearer secret.
+- Selected vault IDs.
+- Capability grants.
+- `read_only`, `guided_write`, or `trusted_workspace` approval mode.
+- Revocation and rotation state in the global app database.
+
+Client ID alone is not authentication. Generated VS Code, Codex, and Claude configurations invoke
+the packaged `flux-server mcp` binary with connection credentials. `flux_list_vaults` lists saved
+grants, and every later tool call supplies an explicit `vaultId`; the bridge has no mutable global
+active vault.
+
+Packaged users never install Go. Flux discovers the bundled sidecar path from its running
+installation and copies a platform-correct configuration. This section describes the production
+target and must not be used as evidence that connection UI or config generation is implemented.

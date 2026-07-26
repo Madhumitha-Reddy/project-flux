@@ -37,7 +37,7 @@ func main() {
 	cfg := config.Load()
 	runtimeLock, err := runtimecoord.Acquire(filepath.Join(cfg.AppDataDir, "runtime", "daemon.lock"))
 	if errors.Is(err, runtimecoord.ErrLocked) {
-		log.Fatal("Another Flux runtime already owns this app-data directory")
+		log.Fatal("Another Flux runtime already owns this app-data directory. If the desktop app is open, it already provides the backend; do not run dev:server separately")
 	}
 	if err != nil {
 		log.Fatalf("Failed to acquire Flux runtime: %v", err)

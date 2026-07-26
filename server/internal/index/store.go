@@ -180,6 +180,12 @@ func (s *Store) ListFiles() ([]domain.FileEntry, error) {
 	return entries, nil
 }
 
+func (s *Store) LinkSourcePaths() ([]string, error) {
+	var paths []string
+	err := s.db.Model(&LinkRecord{}).Distinct().Order("source_path").Pluck("source_path", &paths).Error
+	return paths, err
+}
+
 func (s *Store) ListChildren(parent, cursor string, limit int) ([]domain.FileEntry, string, error) {
 	if limit < 1 || limit > 500 {
 		limit = 250

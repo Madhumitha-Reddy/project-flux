@@ -65,7 +65,6 @@ async function stopStalePublishedBackend(force = false) {
     const descriptor = JSON.parse(
       await readFile(path.join(fluxAppDataDirectory(), "runtime", "daemon.json"), "utf8")
     ) as Partial<RuntimeDescriptor>;
-    if (!force && !isDev && descriptor.version === app.getVersion()) return;
     if (!Number.isInteger(descriptor.pid) || descriptor.pid! <= 0 || !descriptor.token) return;
     const origin = new URL(descriptor.origin ?? "");
     if (
@@ -74,13 +73,16 @@ async function stopStalePublishedBackend(force = false) {
     ) {
       return;
     }
-    const response = await fetch(`${origin.origin}/api/v1/status`, {
-      headers: { "X-Flux-Desktop-Token": descriptor.token },
-      signal: AbortSignal.timeout(1_000),
-    });
-    if (!response.ok) return;
-    const status = (await response.json()) as { version?: unknown };
-    if (status.version !== descriptor.version) return;
+    try {
+      const response = await fetch(`${origin.origin}/api/v1/status`, {
+        headers: { "X-Flux-Desktop-Token": descriptor.token },
+        signal: AbortSignal.timeout(1_000),
+      });
+      const status = response.ok ? ((await response.json()) as { version?: unknown }) : null;
+      if (!force && response.ok && status?.version === app.getVersion()) return;
+    } catch {
+      // Descriptor owner is alive but unreachable. Terminate it so startup can replace it.
+    }
     process.kill(descriptor.pid!, "SIGTERM");
     for (let attempt = 0; attempt < 50; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 100));

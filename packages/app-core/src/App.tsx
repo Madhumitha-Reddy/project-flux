@@ -712,6 +712,10 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
           : "bookmarks";
   const [layoutState, setLayoutState] = useState<FluxLayoutState>();
   const [expandedFolders, setExpandedFolders] = useState<string[]>([]);
+  const [workspaceFileDrop, setWorkspaceFileDrop] = useState<{
+    leafId: number;
+    zone: "center" | "left" | "right" | "top" | "bottom";
+  }>();
   const nextTabIdRef = useRef(2);
   const [workspaceRoot, setWorkspaceRoot] = useState<WorkspaceNode>({
     kind: "leaf",
@@ -726,6 +730,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const sessionSaveTimerRef = useRef<number | undefined>(undefined);
   const sessionSaveChainRef = useRef(Promise.resolve());
   const latestSessionRef = useRef<PersistedWorkspaceSession | undefined>(undefined);
+  const savedSessionSignatureRef = useRef("");
   const flushWorkspaceSessionRef = useRef<() => Promise<void>>(async () => undefined);
   const flushPendingSavesRef = useRef<(vaultId?: string) => Promise<void>>(async () => undefined);
   const savedDocumentsRef = useRef(new Map<string, DemoDocument>());
@@ -760,7 +765,6 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     return () => window.clearTimeout(timer);
   }, [plugins]);
 
-  const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeLeaf = findWorkspaceLeaf(workspaceRoot, activeLeafId);
   const graphVisible = workspaceLeaves(workspaceRoot).some((leaf) => leaf.view === "graph");
   const visibleActiveTab = (() => {
@@ -1285,9 +1289,11 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     isCurrent = () => activeVaultIdRef.current === vaultId
   ) => {
     if (!runtime.client || !vaultId) return [];
-    const entries = await fetchFileChildren(vaultId, "");
+    const parents = ["", ...loadedFoldersRef.current];
+    const entries = (
+      await mapWithConcurrency(parents, 4, (parent) => fetchFileChildren(vaultId, parent))
+    ).flat();
     if (!isCurrent()) return entries;
-    loadedFoldersRef.current.clear();
     fileEntriesRef.current = entries;
     setFileEntries(entries);
     return entries;
@@ -1714,12 +1720,17 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     latestSessionRef.current = persisted;
     setStoredWorkspace(persisted);
     window.clearTimeout(sessionSaveTimerRef.current);
+    const signature = JSON.stringify(persisted);
+    if (signature === savedSessionSignatureRef.current) return;
     sessionSaveTimerRef.current = window.setTimeout(() => {
       sessionSaveChainRef.current = sessionSaveChainRef.current
         .catch(() => undefined)
         .then(() => statePersistence.saveWorkspaceSession(windowIdRef.current, persisted))
+        .then(() => {
+          savedSessionSignatureRef.current = signature;
+        })
         .catch(() => undefined);
-    }, 250);
+    }, 500);
     return () => window.clearTimeout(sessionSaveTimerRef.current);
   }, [
     activeLeafId,
@@ -1739,10 +1750,13 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const flushWorkspaceSession = async () => {
     const persisted = latestSessionRef.current;
     window.clearTimeout(sessionSaveTimerRef.current);
-    if (persisted) {
+    if (persisted && JSON.stringify(persisted) !== savedSessionSignatureRef.current) {
       sessionSaveChainRef.current = sessionSaveChainRef.current
         .catch(() => undefined)
-        .then(() => statePersistence.saveWorkspaceSession(windowIdRef.current, persisted));
+        .then(() => statePersistence.saveWorkspaceSession(windowIdRef.current, persisted))
+        .then(() => {
+          savedSessionSignatureRef.current = JSON.stringify(persisted);
+        });
     }
     await sessionSaveChainRef.current;
   };
@@ -2302,16 +2316,31 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             savedDocumentsRef.current.delete(document.path);
           }
           await runtime.client!.deleteFile(vault.id, path);
-          const activePath =
-            activeTab?.document?.path ?? activeTab?.pdf?.path ?? activeTab?.preview?.path;
-          const activeWasDeleted = activePath === path || activePath?.startsWith(`${path}/`);
-          setTabs((current) =>
-            current.filter((tab) => {
-              const candidate = workspaceTabPath(tab);
-              return !candidate || (candidate !== path && !candidate.startsWith(`${path}/`));
-            })
+          let nextTabs = tabs.filter((tab) => {
+            const candidate = workspaceTabPath(tab);
+            return !candidate || (candidate !== path && !candidate.startsWith(`${path}/`));
+          });
+          let nextRoot = restoreWorkspaceRoot(
+            workspaceRoot,
+            new Set(nextTabs.map((tab) => tab.id))
           );
-          if (activeWasDeleted) replaceWorkspaceDocument(null);
+          if (!nextRoot) {
+            const replacement = createWorkspaceTab(nextTabIdRef.current++);
+            nextTabs = [...nextTabs, replacement];
+            nextRoot = {
+              kind: "leaf",
+              id: nextLeafIdRef.current++,
+              view: "editor",
+              tabIds: [replacement.id],
+              activeTabId: replacement.id,
+            };
+          }
+          const nextLeaf =
+            findWorkspaceLeaf(nextRoot, activeLeafId) ?? workspaceLeaves(nextRoot)[0];
+          setTabs(nextTabs);
+          setWorkspaceRoot(nextRoot);
+          setActiveLeafId(nextLeaf.id);
+          setActiveTabId(nextLeaf.activeTabId);
           setVaultDocuments((current) =>
             current.filter(
               (document) =>
@@ -2817,6 +2846,109 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     setActiveTabId(parsed.tabId);
   };
 
+  const moveTabBefore = (
+    event: DragEvent,
+    targetLeafId: number,
+    targetTabId: number
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const payload = event.dataTransfer.getData("application/x-flux-tab");
+    if (!payload) return;
+    let parsed: { tabId: number; leafId: number };
+    try {
+      parsed = JSON.parse(payload) as { tabId: number; leafId: number };
+    } catch {
+      return;
+    }
+    if (
+      !Number.isInteger(parsed.tabId) ||
+      !Number.isInteger(parsed.leafId) ||
+      parsed.tabId === targetTabId
+    )
+      return;
+    const tab = tabs.find((candidate) => candidate.id === parsed.tabId);
+    setWorkspaceRoot((root) => {
+      const moved =
+        parsed.leafId === targetLeafId
+          ? root
+          : moveWorkspaceTab(root, parsed.tabId, parsed.leafId, targetLeafId);
+      return mapWorkspaceLeaf(moved, targetLeafId, (leaf) => {
+        const tabIds = leaf.tabIds.filter((id) => id !== parsed.tabId);
+        const targetIndex = tabIds.indexOf(targetTabId);
+        tabIds.splice(targetIndex < 0 ? tabIds.length : targetIndex, 0, parsed.tabId);
+        return {
+          ...leaf,
+          view: workspaceTabView(tab),
+          tabIds,
+          activeTabId: parsed.tabId,
+        };
+      });
+    });
+    setActiveLeafId(targetLeafId);
+    setActiveTabId(parsed.tabId);
+  };
+
+  const workspaceDropZone = (
+    event: DragEvent,
+    element: HTMLDivElement
+  ): "center" | "left" | "right" | "top" | "bottom" => {
+    const bounds = element.getBoundingClientRect();
+    const x = (event.clientX - bounds.left) / bounds.width;
+    const y = (event.clientY - bounds.top) / bounds.height;
+    if (x < 0.22) return "left";
+    if (x > 0.78) return "right";
+    if (y < 0.22) return "top";
+    if (y > 0.78) return "bottom";
+    return "center";
+  };
+
+  const dropFileIntoWorkspace = (
+    event: DragEvent<HTMLDivElement>,
+    leaf: Extract<WorkspaceNode, { kind: "leaf" }>
+  ) => {
+    const path =
+      event.dataTransfer.getData("application/x-flux-path") ||
+      event.dataTransfer.getData("application/x-flux-file") ||
+      event.dataTransfer.getData("text/plain");
+    if (!path.trim()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const zone =
+      workspaceFileDrop?.leafId === leaf.id
+        ? workspaceFileDrop.zone
+        : workspaceDropZone(event, event.currentTarget);
+    setWorkspaceFileDrop(undefined);
+    if (zone === "center") {
+      setActiveLeafId(leaf.id);
+      void openDocument(path.trim(), undefined, false, leaf.id);
+      return;
+    }
+    const tab = createWorkspaceTab(nextTabIdRef.current++);
+    const newLeafId = nextLeafIdRef.current++;
+    const splitId = nextLeafIdRef.current++;
+    const newLeaf: Extract<WorkspaceNode, { kind: "leaf" }> = {
+      kind: "leaf",
+      id: newLeafId,
+      view: "editor",
+      tabIds: [tab.id],
+      activeTabId: tab.id,
+    };
+    setTabs((current) => [...current, tab]);
+    setWorkspaceRoot((root) =>
+      mapWorkspaceLeaf(root, leaf.id, (current) => ({
+        kind: "split",
+        id: splitId,
+        direction: zone === "left" || zone === "right" ? "horizontal" : "vertical",
+        children:
+          zone === "left" || zone === "top" ? [newLeaf, current] : [current, newLeaf],
+      }))
+    );
+    setActiveLeafId(newLeafId);
+    setActiveTabId(tab.id);
+    void openDocument(path.trim(), tab.id, false, newLeafId);
+  };
+
   const wasDroppedAtWindowEdge = (event: DragEvent<HTMLDivElement>) =>
     event.clientX === 0 && event.clientY === 0;
 
@@ -3095,7 +3227,8 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const openDocument = async (
     identifier: string,
     targetTabId?: number,
-    historyNavigation = false
+    historyNavigation = false,
+    targetLeafId = activeLeafId
   ) => {
     const navigationIntent = ++navigationIntentRef.current;
     if (vault) void flushPendingSaves(vault.id);
@@ -3125,7 +3258,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     if (existing) {
       setActiveTabId(existing.id);
       setWorkspaceRoot((root) =>
-        mapWorkspaceLeaf(root, activeLeafId, (leaf) => ({
+        mapWorkspaceLeaf(root, targetLeafId, (leaf) => ({
           ...leaf,
           view: "editor",
           tabIds: leaf.tabIds.includes(existing.id) ? leaf.tabIds : [...leaf.tabIds, existing.id],
@@ -3173,7 +3306,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
         );
         return;
       }
-      const leaf = findWorkspaceLeaf(workspaceRoot, activeLeafId);
+      const leaf = findWorkspaceLeaf(workspaceRoot, targetLeafId);
       const emptyTab = leaf
         ? tabs.find(
             (tab) =>
@@ -3191,7 +3324,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
         setTabs((current) => current.map((tab) => (tab.id === emptyTab.id ? replacement : tab)));
         setActiveTabId(emptyTab.id);
         setWorkspaceRoot((root) =>
-          mapWorkspaceLeaf(root, activeLeafId, (current) => ({
+          mapWorkspaceLeaf(root, targetLeafId, (current) => ({
             ...current,
             view: "editor",
             activeTabId: emptyTab.id,
@@ -3203,7 +3336,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       setTabs((current) => [...current, create(id)]);
       setActiveTabId(id);
       setWorkspaceRoot((root) =>
-        mapWorkspaceLeaf(root, activeLeafId, (leaf) => ({
+        mapWorkspaceLeaf(root, targetLeafId, (leaf) => ({
           ...leaf,
           view: "editor",
           tabIds: [...leaf.tabIds, id],
@@ -3423,16 +3556,57 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     return (
       <div
         data-workspace-active={leaf.id === activeLeafId}
-        className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-background"
+        className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-background"
         onPointerDownCapture={() => {
           setActiveLeafId(leaf.id);
           if (leafActiveTab) setActiveTabId(leafActiveTab.id);
         }}
         onDragOver={(event) => {
-          if (event.dataTransfer.types.includes("application/x-flux-tab")) event.preventDefault();
+          if (event.dataTransfer.types.includes("application/x-flux-tab")) {
+            event.preventDefault();
+            return;
+          }
+          if (
+            event.dataTransfer.types.includes("application/x-flux-path") ||
+            event.dataTransfer.types.includes("application/x-flux-file")
+          ) {
+            event.preventDefault();
+            setWorkspaceFileDrop({
+              leafId: leaf.id,
+              zone: workspaceDropZone(event, event.currentTarget),
+            });
+          }
         }}
-        onDrop={(event) => moveTabToLeaf(event, leaf.id)}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node))
+            setWorkspaceFileDrop(undefined);
+        }}
+        onDropCapture={(event) => {
+          if (event.dataTransfer.types.includes("application/x-flux-tab")) {
+            if ((event.target as HTMLElement).closest('[role="tab"]')) return;
+            event.stopPropagation();
+            moveTabToLeaf(event, leaf.id);
+            return;
+          }
+          dropFileIntoWorkspace(event, leaf);
+        }}
       >
+        {workspaceFileDrop?.leafId === leaf.id ? (
+          <div
+            aria-hidden="true"
+            className={`pointer-events-none absolute z-40 rounded-md border-2 border-primary/55 bg-primary/15 shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--primary)_18%,transparent)] ${
+              workspaceFileDrop.zone === "left"
+                ? "inset-y-2 left-2 w-[38%]"
+                : workspaceFileDrop.zone === "right"
+                  ? "inset-y-2 right-2 w-[38%]"
+                  : workspaceFileDrop.zone === "top"
+                    ? "inset-x-2 top-2 h-[38%]"
+                    : workspaceFileDrop.zone === "bottom"
+                      ? "inset-x-2 bottom-2 h-[38%]"
+                      : "inset-3"
+            }`}
+          />
+        ) : null}
         <div
           className={`h-11 shrink-0 bg-[var(--window-chrome-active)] group-data-[window-active=false]/layout:bg-sidebar ${
             leftEdgeLeafIds.has(leaf.id) ? "pl-[var(--flux-titlebar-left-inset)]" : ""
@@ -3481,6 +3655,11 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                         onNativeDragEnd={(event) => {
                           if (wasDroppedAtWindowEdge(event)) popOutTab(tab);
                         }}
+                        onDragOver={(event) => {
+                          if (event.dataTransfer.types.includes("application/x-flux-tab"))
+                            event.preventDefault();
+                        }}
+                        onDrop={(event) => moveTabBefore(event, leaf.id, tab.id)}
                         onClick={() => activateLeafTab(leaf.id, tab.id)}
                         onClose={(event) => {
                           event.stopPropagation();
@@ -3523,6 +3702,13 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                               onNativeDragEnd={(event) => {
                                 if (wasDroppedAtWindowEdge(event)) popOutTab(tab);
                               }}
+                              onDragOver={(event) => {
+                                if (
+                                  event.dataTransfer.types.includes("application/x-flux-tab")
+                                )
+                                  event.preventDefault();
+                              }}
+                              onDrop={(event) => moveTabBefore(event, leaf.id, tab.id)}
                               onClick={() => activateLeafTab(leaf.id, tab.id)}
                               onClose={(event) => {
                                 event.stopPropagation();
@@ -3548,6 +3734,11 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                             onNativeDragEnd={(event) => {
                               if (wasDroppedAtWindowEdge(event)) popOutTab(tab);
                             }}
+                            onDragOver={(event) => {
+                              if (event.dataTransfer.types.includes("application/x-flux-tab"))
+                                event.preventDefault();
+                            }}
+                            onDrop={(event) => moveTabBefore(event, leaf.id, tab.id)}
                             onClick={() => activateLeafTab(leaf.id, tab.id)}
                             onClose={(event) => {
                               event.stopPropagation();
@@ -3678,7 +3869,14 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                 onCreateNote={(parent, name) => void createNote(parent, name)}
                 vaultEntries={vault ? fileEntries : undefined}
                 onCreateFolder={(parent, name) => void createFolder(parent, name)}
-                onMovePath={(source, destination) => void movePath(source, destination)}
+                onMovePath={(source, destination) => {
+                  if (
+                    window.confirm(
+                      `Move "${source}" to "${destination}"?\n\nLinks and backlinks will be updated.`
+                    )
+                  )
+                    void movePath(source, destination);
+                }}
                 onRenamePath={renamePath}
                 onDeletePath={(path) => void deletePath(path)}
                 onArchivePath={(path) => void archivePath(path)}
