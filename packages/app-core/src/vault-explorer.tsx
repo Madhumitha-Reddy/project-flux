@@ -92,11 +92,24 @@ export function VaultExplorer({
 }: VaultExplorerProps) {
   const activeRef = useRef<HTMLButtonElement>(null);
   const revealRef = useRef<HTMLButtonElement>(null);
+  const prevActiveRef = useRef(activePath);
+  const prevRevealRef = useRef(revealPath);
+
   useEffect(() => {
-    const row = (revealPath ? revealRef.current : null) ?? activeRef.current;
-    if (!row) return;
-    row.scrollIntoView({ behavior: "auto", block: "nearest" });
-  }, [activePath, expandedFolders, revealPath]);
+    const activeChanged = activePath !== prevActiveRef.current;
+    const revealChanged = revealPath !== prevRevealRef.current;
+    prevActiveRef.current = activePath;
+    prevRevealRef.current = revealPath;
+
+    const targetRef =
+      revealChanged && revealPath
+        ? revealRef.current ?? activeRef.current
+        : activeChanged && activePath
+          ? activeRef.current
+          : null;
+
+    targetRef?.scrollIntoView({ behavior: "auto", block: "nearest" });
+  }, [activePath, revealPath]);
 
   const [selectedFolder, setSelectedFolder] = useState<string>();
   const [localExpandedPaths, setLocalExpandedPaths] = useState<Set<string>>(new Set());
