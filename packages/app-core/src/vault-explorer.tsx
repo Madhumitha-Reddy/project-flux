@@ -22,6 +22,7 @@ interface VaultExplorerProps {
   entries: FileEntry[];
   activePath?: string;
   revealPath?: string;
+  selectedPath?: string;
   onClearRevealPath?: () => void;
   onOpen: (path: string) => void;
   onCreateNote: (parent: string, name: string) => void;
@@ -89,6 +90,7 @@ export function VaultExplorer({
   onExpandedFoldersChange,
   onExpandFolder,
   onSelectPath,
+  selectedPath,
 }: VaultExplorerProps) {
   const activeRef = useRef<HTMLButtonElement>(null);
   const revealRef = useRef<HTMLButtonElement>(null);
@@ -318,6 +320,7 @@ export function VaultExplorer({
             return;
           }
           setSelectedFolder(entry.path);
+          onSelectPath?.(entry.path);
           updateExpandedPaths((current) => {
             const next = new Set(current);
             if (next.has(entry.path)) next.delete(entry.path);
@@ -383,10 +386,12 @@ export function VaultExplorer({
           dropTarget === entry.path
             ? "bg-primary/10 text-foreground ring-1 ring-inset ring-primary/50"
             : entry.path === activePath
-              ? "bg-sidebar-selected text-sidebar-accent-foreground font-medium ring-2 ring-[var(--layout-separator)] ring-inset"
+              ? "bg-sidebar-selected text-sidebar-accent-foreground font-medium"
               : isRevealTarget
                 ? "bg-primary/10 text-foreground ring-1 ring-inset ring-primary/50"
-                : "text-muted-foreground"
+                : entry.path === selectedPath
+                  ? "bg-accent/60 text-foreground ring-1 ring-inset ring-primary/50"
+                  : "text-muted-foreground"
         }`}
         style={{ paddingLeft: 8 + depth * 16 }}
       >
