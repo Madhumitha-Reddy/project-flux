@@ -721,10 +721,11 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeLeaf = findWorkspaceLeaf(workspaceRoot, activeLeafId);
   const graphVisible = workspaceLeaves(workspaceRoot).some((leaf) => leaf.view === "graph");
-  const visibleActiveTab =
-    activeLeaf?.view === "editor"
-      ? tabs.find((tab) => tab.id === activeLeaf.activeTabId)
-      : undefined;
+  const visibleActiveTab = (() => {
+    if (activeLeaf?.view !== "editor") return undefined;
+    const leafTabs = activeLeaf.tabIds.map((id) => tabs.find((t) => t.id === id)).filter((t) => t !== undefined);
+    return leafTabs.find((tab) => tab.id === activeLeaf.activeTabId) ?? leafTabs[0];
+  })();
 
   const activeFilePath =
     visibleActiveTab?.document?.path ??
@@ -1054,6 +1055,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
         activeTabId: id,
       }))
     );
+    revealSidebarPath(undefined);
   };
 
   const closeOtherTabs = (leafId: number, id: number) => {
@@ -2663,8 +2665,8 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   };
 
   const revealSidebarPath = (targetPath?: string) => {
-    if (!targetPath) return;
     setSidebarRevealPath(targetPath);
+    if (!targetPath) return;
     const parts = targetPath.split("/").filter(Boolean).slice(0, -1);
     if (parts.length === 0) return;
     const ancestors = parts.map((_, index) => parts.slice(0, index + 1).join("/"));
