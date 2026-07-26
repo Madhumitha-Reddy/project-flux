@@ -1072,6 +1072,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     setActiveTabId(id);
     setActiveLeafId(leafId);
     setWorkspaceRoot(nextRoot);
+    revealSidebarPath(tab?.document?.path ?? tab?.pdf?.path ?? tab?.preview?.path);
   };
 
   const closeTabsAfter = (leafId: number, id: number) => {
@@ -1088,7 +1089,10 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     }));
     setTabs((current) => current.filter((candidate) => workspaceHasTab(nextRoot, candidate.id)));
     setWorkspaceRoot(nextRoot);
-    if (activeLeafId === leafId) setActiveTabId(nextLeaf.activeTabId);
+    if (activeLeafId === leafId) {
+      setActiveTabId(nextLeaf.activeTabId);
+      revealSidebarPath(nextActiveTab?.document?.path ?? nextActiveTab?.pdf?.path ?? nextActiveTab?.preview?.path);
+    }
   };
 
   const closeAllTabs = (leafId: number) => {
@@ -1104,6 +1108,8 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       setWorkspaceRoot(nextRoot);
       setActiveLeafId(nextLeaf.id);
       setActiveTabId(nextLeaf.activeTabId);
+      const nextActiveTab = tabs.find((candidate) => candidate.id === nextLeaf.activeTabId);
+      revealSidebarPath(nextActiveTab?.document?.path ?? nextActiveTab?.pdf?.path ?? nextActiveTab?.preview?.path);
       return;
     }
     const replacement = createWorkspaceTab(nextTabIdRef.current++);
@@ -1115,6 +1121,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       tabIds: [replacement.id],
       activeTabId: replacement.id,
     });
+    revealSidebarPath(undefined);
   };
 
   const togglePinned = (id: number) => {
@@ -1167,6 +1174,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
         activeTabId: replacement.id,
       });
       setActiveTabId(replacement.id);
+      revealSidebarPath(undefined);
       return;
     }
 
@@ -1180,6 +1188,8 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       if (!workspaceHasTab(nextRoot, tabId)) {
         setTabs((current) => current.filter((candidate) => candidate.id !== tabId));
       }
+      const activeTab = tabs.find((candidate) => candidate.id === nextLeaf.activeTabId);
+      revealSidebarPath(activeTab?.document?.path ?? activeTab?.pdf?.path ?? activeTab?.preview?.path);
       return;
     }
 
@@ -1203,6 +1213,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     if (!workspaceHasTab(nextRoot, tabId)) {
       setTabs((current) => current.filter((candidate) => candidate.id !== tabId));
     }
+    revealSidebarPath(nextActiveTab?.document?.path ?? nextActiveTab?.pdf?.path ?? nextActiveTab?.preview?.path);
   };
 
   const replaceWorkspaceDocument = (document: DemoDocument | null) => {
@@ -1213,6 +1224,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     nextTabIdRef.current = 2;
     setWorkspaceRoot({ kind: "leaf", id: 1, view: "editor", tabIds: [1], activeTabId: 1 });
     setActiveLeafId(1);
+    revealSidebarPath(document?.path);
   };
 
   const fetchFileChildren = async (vaultId: string, parent: string) => {
