@@ -224,9 +224,12 @@ export function createPlugin(directory: string): string {
         apiVersion: "1",
         description: "A Flux plugin",
         entry: "dist/main.js",
-        activationEvents: ["onVaultOpen"],
+        activationEvents: [`onCommand:${id}.search-welcome`],
         requiredPermissions: ["vault.search"],
         optionalPermissions: [],
+        contributes: {
+          commands: [{ id: `${id}.search-welcome`, title: "Search welcome notes" }],
+        },
       },
       null,
       2
@@ -252,7 +255,7 @@ export function createPlugin(directory: string): string {
   );
   writeFileSync(
     join(root, "src/main.ts"),
-    `import { definePlugin } from "@flux/plugin-sdk";\n\nexport default definePlugin({\n  async activate(context) {\n    await context.capabilities.invoke("vault.search", {\n      query: "#welcome",\n      limit: 5,\n    });\n  },\n});\n`
+    `import { definePlugin } from "@flux/plugin-sdk";\n\nlet stop: (() => void) | undefined;\n\nexport default definePlugin({\n  activate(context) {\n    stop = context.on("command:${id}.search-welcome", async () => {\n      await context.capabilities.invoke("vault.search", {\n        query: "#welcome",\n        limit: 5,\n      });\n    });\n  },\n  deactivate() {\n    stop?.();\n  },\n});\n`
   );
   writeFileSync(
     join(root, "README.md"),

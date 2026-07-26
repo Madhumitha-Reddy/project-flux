@@ -29,6 +29,7 @@ type SettingsPage =
 interface SettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onOpenPlugins: () => void;
   vaultName?: string;
 }
 
@@ -881,48 +882,20 @@ function CorePluginsPage() {
 /*  Community Plugins page                                             */
 /* ------------------------------------------------------------------ */
 
-function CommunityPluginsPage() {
-  const { settings, updateSettings } = useFluxSettings();
-  const isEnabled = settings.plugins["community-plugins"] === true;
-
-  const toggleCommunity = () => {
-    updateSettings((prev) => ({
-      ...prev,
-      plugins: {
-        ...prev.plugins,
-        "community-plugins": !isEnabled,
-      },
-    }));
-  };
-
+function CommunityPluginsPage({ onOpenPlugins }: { onOpenPlugins: () => void }) {
   return (
-    <div>
-      <div className="space-y-4">
-        <SettingRow
-          label="Community plugins"
-          description="Enable community plugins to customize your workspace with third-party extensions. Note: Community plugins can access local files and write data."
-        >
-          <Toggle checked={isEnabled} onChange={toggleCommunity} label="Community plugins" />
-        </SettingRow>
-
-        {isEnabled && (
-          <>
-            <SettingDivider />
-            <SettingRow
-              label="Browse plugins"
-              description="Find, browse, and install community plugins from the community plugin registry."
-            >
-              <button
-                type="button"
-                className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 shadow-sm transition-colors"
-              >
-                Browse
-              </button>
-            </SettingRow>
-          </>
-        )}
-      </div>
-    </div>
+    <SettingRow
+      label="Manage community plugins"
+      description="Install packages, review capabilities, and enable plugins separately for each vault."
+    >
+      <button
+        type="button"
+        onClick={onOpenPlugins}
+        className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        Open plugin manager
+      </button>
+    </SettingRow>
   );
 }
 
@@ -930,18 +903,22 @@ function CommunityPluginsPage() {
 /*  Root Settings Dialog                                               */
 /* ------------------------------------------------------------------ */
 
-const pageComponents: Record<SettingsPage, React.ComponentType<{ vaultName: string }>> = {
+const pageComponents: Partial<Record<SettingsPage, React.ComponentType<{ vaultName: string }>>> = {
   general: GeneralPage,
   editor: EditorPage,
   appearance: AppearancePage,
   keychain: KeychainPage,
   "core-plugins": CorePluginsPage,
-  "community-plugins": CommunityPluginsPage,
 };
 
-export function SettingsDialog({ open, onOpenChange, vaultName = "" }: SettingsDialogProps) {
+export function SettingsDialog({
+  open,
+  onOpenChange,
+  onOpenPlugins,
+  vaultName = "",
+}: SettingsDialogProps) {
   const [activePage, setActivePage] = useState<SettingsPage>("general");
-  const ActivePageComponent = pageComponents[activePage];
+  const ActivePageComponent = pageComponents[activePage] ?? GeneralPage;
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -971,7 +948,11 @@ export function SettingsDialog({ open, onOpenChange, vaultName = "" }: SettingsD
 
           {/* Right content panel */}
           <div className="flex-1 overflow-y-auto p-8">
-            <ActivePageComponent vaultName={vaultName} />
+            {activePage === "community-plugins" ? (
+              <CommunityPluginsPage onOpenPlugins={onOpenPlugins} />
+            ) : (
+              <ActivePageComponent vaultName={vaultName} />
+            )}
           </div>
         </Dialog.Content>
       </Dialog.Portal>

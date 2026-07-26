@@ -57,7 +57,7 @@ import {
   type DemoDocument,
 } from "./markdown-editor";
 import { setFrontmatterProperty } from "./frontmatter";
-import { isIgnoredPath, globalBacklinkStore } from "./link-index";
+import { isIgnoredPath } from "./link-index";
 import {
   WorkspaceLeftSidebar,
   WorkspaceRibbon,
@@ -77,7 +77,7 @@ import {
 } from "./bookmark-store";
 import { PdfExportDialog } from "./pdf-export";
 import { SettingsDialog } from "./settings-dialog";
-import { useFluxSettings } from "./settings-store";
+import { APP_STATE_KEY, useFluxSettings } from "./settings-store";
 import { FilePreview } from "./file-preview";
 import {
   closeOtherWorkspaceTabs,
@@ -604,7 +604,13 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const statePersistence = runtime.statePersistence ?? browserStatePersistence;
   const [status, setStatus] = useState("Connecting…");
   const [initializationPhase, setInitializationPhase] = useState<InitializationPhase>("starting");
+  const [settingsHydrated, setSettingsHydrated] = useState(false);
   const [performanceStats, setPerformanceStats] = useState<FluxPerformanceStats | null>(null);
+
+  useEffect(() => {
+    if (!settingsHydrated) return;
+    void statePersistence.saveAppSetting(APP_STATE_KEY, settings).catch(() => undefined);
+  }, [settings, settingsHydrated, statePersistence]);
   const [tabs, setTabs] = useState<WorkspaceTab[]>(() => [
     createWorkspaceTab(1, documentFromLocation()),
   ]);
@@ -1486,43 +1492,6 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       );
     }
     setVaultDocuments(resolved);
-    globalBacklinkStore.rebuild(resolved);
-
-    // Background incremental indexing for ALL remaining markdown files
-    // Ensures instant startup while building full-vault backlinks without blocking UI
-    const backgroundEntries = entries.filter(
-      (entry) =>
-        (entry.kind === "markdown" || entry.kind === "text") &&
-        !savedDocumentsRef.current.has(entry.path)
-    );
-    setTimeout(async () => {
-      let index = 0;
-      const CHUNK = 50;
-      while (index < backgroundEntries.length) {
-        const chunk = backgroundEntries.slice(index, index + CHUNK);
-        const chunkLoaded = await Promise.all<DemoDocument | null>(
-          chunk.map(async (entry): Promise<DemoDocument | null> => {
-            try {
-              const file = await runtime.client!.readFile(vaultId, entry.path);
-              return {
-                title: titleFromPath(file.path),
-                path: file.path,
-                content: file.content,
-                contentHash: file.contentHash,
-              } satisfies DemoDocument;
-            } catch {
-              return null;
-            }
-          })
-        );
-        const chunkDocs = chunkLoaded.filter(
-          (doc): doc is DemoDocument => doc !== null
-        );
-        if (chunkDocs.length) globalBacklinkStore.updateDocuments(chunkDocs);
-        index += CHUNK;
-        await new Promise((r) => setTimeout(r, 50));
-      }
-    }, 1000);
 
     return resolved;
   };
@@ -1794,7 +1763,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     const reconcile = async () => {
       const parents = ["", ...loadedFoldersRef.current];
       const entries = (
-        await Promise.all(parents.map((parent) => fetchFileChildren(vault.id, parent)))
+        await mapWithConcurrency(parents, 4, (parent) => fetchFileChildren(vault.id, parent))
       ).flat();
       if (!active) return;
       fileEntriesRef.current = entries;
@@ -3104,28 +3073,24 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     </FluxEditorPane>
   );
 
-  const [backlinksCount, setBacklinksCount] = useState(0);
-
+  const [loadedBacklinksCount, setLoadedBacklinksCount] = useState(0);
+  const backlinkPath = visibleActiveTab?.document?.path;
+  const backlinksCount = backlinkPath ? loadedBacklinksCount : 0;
   useEffect(() => {
-    const updateCount = () => {
-      if (visibleActiveTab?.document) {
-        const identifier = visibleActiveTab.document.path ?? visibleActiveTab.document.title;
-        const mentions = globalBacklinkStore.getLinkedMentions(identifier);
-
-        // Deduplicate by source document to count unique backlinking files, not total mentions
-        const uniqueSources = new Set(mentions.map((m) => m.source));
-        setBacklinksCount(uniqueSources.size);
-      } else {
-        setBacklinksCount(0);
-      }
-    };
-
-    updateCount();
-    const unsubscribe = globalBacklinkStore.subscribe(updateCount);
+    let active = true;
+    if (!backlinkPath) return;
+    void loadDocumentReferences(backlinkPath)
+      .then((references) => {
+        if (active)
+          setLoadedBacklinksCount(new Set(references.linked.map((mention) => mention.source)).size);
+      })
+      .catch(() => {
+        if (active) setLoadedBacklinksCount(0);
+      });
     return () => {
-      unsubscribe();
+      active = false;
     };
-  }, [visibleActiveTab?.document]);
+  }, [backlinkPath, loadDocumentReferences]);
 
   const openDocument = async (
     identifier: string,
@@ -3395,6 +3360,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
         ]);
         if (!active) return;
         hydrateAppState(settings);
+        setSettingsHydrated(true);
         if (runtime.client) {
           const [recent, available] = await Promise.all([
             runtime.client.listRecentVaults(),
@@ -3914,7 +3880,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                       </label>
                     </div>
                     <p className="mt-auto border-t pt-3 text-[10px] leading-4 text-muted-foreground [border-color:var(--layout-separator)]">
-                      Signed packages. Per-vault permissions. Isolated runtime.
+                      Verified package. Per-vault permissions. Isolated runtime.
                     </p>
                   </aside>
                   <div className="flex min-h-0 min-w-0 flex-col">
@@ -4064,6 +4030,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                                                 ?.emit(entry.manifest.id, `command:${command.id}`, {
                                                   commandId: command.id,
                                                 })
+                                                .then(() => toast.success(`${command.title} finished`))
                                                 .catch((error) =>
                                                   toast.error(`${command.title} failed`, {
                                                     description:
@@ -4631,6 +4598,10 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
           <SettingsDialog
             open={settingsOpen}
             onOpenChange={setSettingsOpen}
+            onOpenPlugins={() => {
+              setSettingsOpen(false);
+              openPluginManager();
+            }}
             vaultName={vault?.name}
           />
           <AddBookmarkDialog

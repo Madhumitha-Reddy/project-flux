@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 )
 
 type Capability string
@@ -57,6 +58,17 @@ func NewPolicy(principal Principal, approve Approver) (*Policy, error) {
 		return nil, fmt.Errorf("%w: invalid approval mode", ErrAccessDenied)
 	}
 	return &Policy{principal: principal, approve: approve}, nil
+}
+
+func (p *Policy) VaultIDs() []string {
+	ids := make([]string, 0, len(p.principal.Vaults))
+	for id, allowed := range p.principal.Vaults {
+		if allowed {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func (p *Policy) Authorize(ctx context.Context, vaultID string, capability Capability, action string) error {

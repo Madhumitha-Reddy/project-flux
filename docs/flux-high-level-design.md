@@ -2170,54 +2170,54 @@ The AI Chat plugin and external MCP clients share one tool registry.
 Representative tools:
 
 ```text
-flux.list_vaults
-flux.get_vault
-flux.get_vault_status
+flux_list_vaults
+flux_get_vault
+flux_get_vault_status
 
-flux.list_files
-flux.read_file
-flux.create_directory
-flux.create_file
-flux.update_file
-flux.move_file
-flux.delete_file
-flux.restore_file
+flux_list_files
+flux_read_file
+flux_create_directory
+flux_create_file
+flux_update_file
+flux_move_file
+flux_delete_file
+flux_restore_file
 
-flux.search
-flux.get_backlinks
-flux.get_outgoing_links
-flux.get_broken_links
-flux.resolve_link
-flux.get_graph_neighbors
-flux.create_link
-flux.remove_link
+flux_search
+flux_get_backlinks
+flux_get_outgoing_links
+flux_get_broken_links
+flux_resolve_link
+flux_get_graph_neighbors
+flux_create_link
+flux_remove_link
 
-flux.list_tasks
-flux.create_task
-flux.update_task
-flux.complete_task
-flux.move_task
+flux_list_tasks
+flux_create_task
+flux_update_task
+flux_complete_task
+flux_move_task
 
-flux.get_frontmatter
-flux.update_frontmatter
-flux.list_tags
-flux.add_tag
-flux.remove_tag
+flux_get_frontmatter
+flux_update_frontmatter
+flux_list_tags
+flux_add_tag
+flux_remove_tag
 
-flux.git_status
-flux.git_diff
-flux.git_commit
-flux.git_pull
-flux.git_push
+flux_git_status
+flux_git_diff
+flux_git_commit
+flux_git_pull
+flux_git_push
 ```
 
 For reliable multi-file changes, Flux may expose:
 
 ```text
-flux.apply_vault_plan
+flux_apply_vault_plan
 ```
 
-`flux.apply_vault_plan` validates the entire operation set before applying it through normal path validation, locking, atomic writes, conflict handling, indexing, and event emission.
+`flux_apply_vault_plan` validates the entire operation set before applying it through normal path validation, locking, atomic writes, conflict handling, indexing, and event emission.
 
 Before its first canonical write, it persists a private write-ahead journal under
 `.flux/recovery/vault-plans/`. Journal contains normalized paths, original content hashes

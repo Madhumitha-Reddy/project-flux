@@ -97,8 +97,6 @@ export const DEFAULT_SETTINGS: FluxSettings = {
   },
 };
 
-const STORAGE_KEY = "flux-app-settings-v1";
-
 function mergeSettings(settings?: Partial<FluxSettings>): FluxSettings {
   return {
     general: { ...DEFAULT_SETTINGS.general, ...settings?.general },
@@ -112,20 +110,10 @@ function mergeSettings(settings?: Partial<FluxSettings>): FluxSettings {
 export const APP_STATE_KEY = "fluxSettings";
 
 export function loadSettings(): FluxSettings {
-  if (typeof window === "undefined") return DEFAULT_SETTINGS;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_SETTINGS;
-    const parsed = JSON.parse(raw);
-    return mergeSettings(parsed);
-  } catch {
-    return DEFAULT_SETTINGS;
-  }
+  return DEFAULT_SETTINGS;
 }
 
 export function saveSettings(settings: FluxSettings): void {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   applyAppearanceSettings(settings.appearance);
 }
 
@@ -189,7 +177,7 @@ export function useFluxSettings() {
       const next = mergeSettings(updater(current));
       setSetting(APP_STATE_KEY, next);
       setSetting("theme", next.appearance.theme);
-      saveSettings(next);
+      applyAppearanceSettings(next.appearance);
     },
     [setSetting]
   );

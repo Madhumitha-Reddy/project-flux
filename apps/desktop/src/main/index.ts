@@ -23,6 +23,10 @@ let backendHeartbeat: ReturnType<typeof setInterval> | null = null;
 let backendStartup: Promise<void> | null = null;
 const backendStartupAttempts = 300;
 
+function fluxAppDataDirectory() {
+  return process.env.FLUX_APP_DATA_DIR ?? path.join(app.getPath("appData"), "Flux");
+}
+
 interface RuntimeDescriptor {
   pid: number;
   origin: string;
@@ -34,7 +38,7 @@ interface RuntimeDescriptor {
 async function attachPublishedBackend() {
   try {
     const descriptor = JSON.parse(
-      await readFile(path.join(app.getPath("userData"), "runtime", "daemon.json"), "utf8")
+      await readFile(path.join(fluxAppDataDirectory(), "runtime", "daemon.json"), "utf8")
     ) as Partial<RuntimeDescriptor>;
     const origin = new URL(descriptor.origin ?? "");
     if (
@@ -59,7 +63,7 @@ async function attachPublishedBackend() {
 async function stopStalePublishedBackend(force = false) {
   try {
     const descriptor = JSON.parse(
-      await readFile(path.join(app.getPath("userData"), "runtime", "daemon.json"), "utf8")
+      await readFile(path.join(fluxAppDataDirectory(), "runtime", "daemon.json"), "utf8")
     ) as Partial<RuntimeDescriptor>;
     if (!force && !isDev && descriptor.version === app.getVersion()) return;
     if (!Number.isInteger(descriptor.pid) || descriptor.pid! <= 0 || !descriptor.token) return;
@@ -185,15 +189,15 @@ async function ensureBackend() {
     throw new Error(`Configured FLUX backend is unavailable at ${externalBackendOrigin}`);
   }
 
-  if (!isDev && (await attachPublishedBackend()) && (await backendReady())) return;
-  await stopStalePublishedBackend(isDev || Boolean(backendOrigin));
+  if ((await attachPublishedBackend()) && (await backendReady())) return;
+  await stopStalePublishedBackend(Boolean(backendOrigin));
 
   const backendEnvironment = {
     ...process.env,
     ENVIRONMENT: "desktop",
     HOST: "127.0.0.1",
     PORT: "0",
-    FLUX_APP_DATA_DIR: app.getPath("userData"),
+    FLUX_APP_DATA_DIR: fluxAppDataDirectory(),
     FLUX_DESKTOP_TOKEN: "",
     FLUX_DAEMON_IDLE_TIMEOUT: "2m",
   };
