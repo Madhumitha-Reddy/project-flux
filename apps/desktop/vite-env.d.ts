@@ -4,6 +4,9 @@ interface Window {
   electronAPI?: {
     ping: () => Promise<string>;
     getWindowId: () => Promise<string>;
+    hideWindow: () => Promise<void>;
+    getMCPServerCommand: () => Promise<{ command: string; args: string[] }>;
+    onCommand: (handler: (command: string) => void) => () => void;
     checkForUpdates: () => Promise<{
       isDev: boolean;
       isPackaged: boolean;

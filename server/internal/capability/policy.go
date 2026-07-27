@@ -48,6 +48,21 @@ type Approver func(context.Context, ApprovalRequest) (bool, error)
 type Policy struct {
 	principal Principal
 	approve   Approver
+	validate  func(context.Context) error
+}
+
+func (p *Policy) SetValidator(validate func(context.Context) error) {
+	p.validate = validate
+}
+
+func (p *Policy) Validate(ctx context.Context) error {
+	if p.validate == nil {
+		return nil
+	}
+	if err := p.validate(ctx); err != nil {
+		return fmt.Errorf("%w: connection is invalid or revoked", ErrAccessDenied)
+	}
+	return nil
 }
 
 func NewPolicy(principal Principal, approve Approver) (*Policy, error) {
@@ -72,6 +87,9 @@ func (p *Policy) VaultIDs() []string {
 }
 
 func (p *Policy) Authorize(ctx context.Context, vaultID string, capability Capability, action string) error {
+	if err := p.Validate(ctx); err != nil {
+		return err
+	}
 	if !p.principal.Vaults[vaultID] || !p.principal.Capabilities[capability] {
 		return fmt.Errorf("%w: client %q lacks %s for vault %q", ErrAccessDenied, p.principal.ID, capability, vaultID)
 	}

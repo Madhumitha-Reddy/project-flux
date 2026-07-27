@@ -60,6 +60,9 @@ func RegisterRoutes(router *gin.Engine, app *application.Service, options ...Rou
 	v1.PUT("/workspace-sessions/:windowId", handler.saveWorkspace)
 	v1.GET("/app-settings", handler.appSettings)
 	v1.PUT("/app-settings/:key", handler.putAppSetting)
+	v1.GET("/mcp-connections", handler.mcpConnections)
+	v1.POST("/mcp-connections", handler.createMCPConnection)
+	v1.DELETE("/mcp-connections/:connectionId", handler.revokeMCPConnection)
 	v1.GET("/plugins", handler.listPlugins)
 	v1.GET("/marketplace", handler.marketplace)
 	v1.POST("/plugins/install", handler.installPlugin)
@@ -71,6 +74,8 @@ func RegisterRoutes(router *gin.Engine, app *application.Service, options ...Rou
 	v1.GET("/vaults/available", handler.availableVaults)
 	v1.POST("/vaults/create", handler.createVault)
 	v1.GET("/vaults/:vaultId", handler.vaultInfo)
+	v1.GET("/vaults/:vaultId/config", handler.vaultConfig)
+	v1.PUT("/vaults/:vaultId/config", handler.saveVaultConfig)
 	v1.GET("/vaults/:vaultId/revision", handler.vaultRevision)
 	v1.GET("/vaults/:vaultId/events", handler.vaultEvents)
 	v1.POST("/vaults/:vaultId/index/rebuild", handler.rebuildIndex)
@@ -102,6 +107,85 @@ func RegisterRoutes(router *gin.Engine, app *application.Service, options ...Rou
 	v1.GET("/vaults/:vaultId/trash", handler.listTrash)
 	v1.DELETE("/vaults/:vaultId/trash", handler.purgeTrash)
 	v1.DELETE("/vaults/:vaultId/trash/:trashId", handler.permanentlyDelete)
+}
+
+func (h *Handler) vaultConfig(c *gin.Context) {
+	content, err := h.app.VaultConfig(c.Param("vaultId"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.Data(http.StatusOK, "application/json", content)
+}
+
+func (h *Handler) saveVaultConfig(c *gin.Context) {
+	content, err := c.GetRawData()
+	if err != nil {
+		writeRequestError(c, err)
+		return
+	}
+	if err := h.app.SaveVaultConfig(c.Param("vaultId"), content); err != nil {
+		writeRequestError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+type createMCPConnectionRequest struct {
+	Name     string   `json:"name" binding:"required"`
+	Mode     string   `json:"mode" binding:"required"`
+	VaultIDs []string `json:"vaultIds" binding:"required,min=1"`
+}
+
+func (h *Handler) mcpConnections(c *gin.Context) {
+	if !h.requireAppData(c) {
+		return
+	}
+	items, err := h.appData.MCPConnections()
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, items)
+}
+
+func (h *Handler) createMCPConnection(c *gin.Context) {
+	if !h.requireAppData(c) {
+		return
+	}
+	var request createMCPConnectionRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeRequestError(c, err)
+		return
+	}
+	if request.Mode != "read_only" && request.Mode != "guided_write" &&
+		request.Mode != "trusted_workspace" {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_mode", "error": "invalid approval mode"})
+		return
+	}
+	capabilities := `["vault.read"]`
+	if request.Mode != "read_only" {
+		capabilities = `["vault.read","vault.write","vault.move","vault.delete"]`
+	}
+	item, err := h.appData.CreateMCPConnection(
+		request.Name, request.Mode, request.VaultIDs, capabilities,
+	)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, item)
+}
+
+func (h *Handler) revokeMCPConnection(c *gin.Context) {
+	if !h.requireAppData(c) {
+		return
+	}
+	if err := h.appData.RevokeMCPConnection(c.Param("connectionId")); err != nil {
+		writeError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (h *Handler) requirePlugins(c *gin.Context) bool {
@@ -770,7 +854,9 @@ func (h *Handler) references(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": "path_required", "error": "path is required"})
 		return
 	}
-	result, err := h.app.DocumentReferences(c.Param("vaultId"), c.Query("path"))
+	result, err := h.app.DocumentReferences(
+		c.Param("vaultId"), c.Query("path"), c.Query("includeUnlinked") == "true",
+	)
 	if err != nil {
 		writeError(c, err)
 		return

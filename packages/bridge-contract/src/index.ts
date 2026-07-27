@@ -64,6 +64,20 @@ export interface AppBootstrap {
   settings: Record<string, unknown>;
 }
 
+export interface MCPConnection {
+  id: string;
+  name: string;
+  mode: "read_only" | "guided_write" | "trusted_workspace";
+  vaultIds: string[];
+  createdAt: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+}
+
+export interface MCPConnectionCredential extends MCPConnection {
+  secret: string;
+}
+
 export interface FileEntry {
   path: string;
   name: string;
@@ -273,6 +287,15 @@ export interface FluxClient {
   saveWorkspace(windowId: string, vaultId: string, state: unknown): Promise<void>;
   getAppSettings(): Promise<Record<string, unknown>>;
   putAppSetting(key: string, value: unknown): Promise<void>;
+  getVaultConfig(vaultId: string): Promise<Record<string, unknown>>;
+  putVaultConfig(vaultId: string, value: Record<string, unknown>): Promise<void>;
+  listMCPConnections(): Promise<MCPConnection[]>;
+  createMCPConnection(request: {
+    name: string;
+    mode: MCPConnection["mode"];
+    vaultIds: string[];
+  }): Promise<MCPConnectionCredential>;
+  revokeMCPConnection(connectionId: string): Promise<void>;
   listPlugins(): Promise<PluginCatalogEntry[]>;
   getMarketplace(): Promise<MarketplaceIndex>;
   installMarketplacePlugin(pluginId: string): Promise<PluginInstallResult>;
@@ -325,7 +348,11 @@ export interface FluxClient {
     offset?: number,
     matchCase?: boolean
   ): Promise<SearchResult[]>;
-  getDocumentReferences(vaultId: string, path: string): Promise<DocumentReferences>;
+  getDocumentReferences(
+    vaultId: string,
+    path: string,
+    includeUnlinked?: boolean
+  ): Promise<DocumentReferences>;
   getVaultFacets(vaultId: string): Promise<VaultFacets>;
   getFileMetadata(vaultId: string, path: string): Promise<FileEntry | null>;
   rebuildIndex(vaultId: string): Promise<void>;

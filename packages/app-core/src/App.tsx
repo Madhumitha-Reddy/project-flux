@@ -3,6 +3,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useEffectEvent,
   useMemo,
   useRef,
   useState,
@@ -113,6 +114,11 @@ export interface FluxRuntime {
   selectVaultDirectory?: (mode: "open" | "create") => Promise<string | null>;
   getPerformanceStats?: () => Promise<FluxPerformanceStats | null>;
   openWindow?: (url: string) => Promise<void>;
+  hideWindow?: () => Promise<void>;
+  getMCPServerCommand?: () => Promise<{ command: string; args: string[] }>;
+  onCommand?: (
+    handler: (command: "search" | "daily-today" | "calendar" | "settings") => void
+  ) => () => void;
   onBeforeShutdown?: (handler: () => Promise<void>) => () => void;
   exportPdf?: (options: PdfExportOptions) => Promise<string | null>;
   getWindowId?: () => Promise<string>;
@@ -553,6 +559,137 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "An unexpected error occurred.";
 }
 
+function localDateKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate()
+  ).padStart(2, "0")}`;
+}
+
+function dateFromKey(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day, 12);
+}
+
+function isoWeekKey(date: Date) {
+  const value = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  value.setUTCDate(value.getUTCDate() + 4 - (value.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(value.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((value.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+  return `${value.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
+function calendarGrid(selected: string) {
+  const date = dateFromKey(selected);
+  const first = new Date(date.getFullYear(), date.getMonth(), 1, 12);
+  const start = new Date(first);
+  start.setDate(first.getDate() - first.getDay());
+  return Array.from({ length: 42 }, (_, index) => {
+    const day = new Date(start);
+    day.setDate(start.getDate() + index);
+    return day;
+  });
+}
+
+interface DailyNoteConfig {
+  dailyFolder: string;
+  weeklyFolder: string;
+  inboxPath: string;
+  dailyFormat: string;
+  weeklyFormat: string;
+  dailyTemplate?: string;
+  weeklyTemplate?: string;
+  timeZone: string;
+}
+
+const defaultDailyNoteConfig: DailyNoteConfig = {
+  dailyFolder: "Daily",
+  weeklyFolder: "Daily/Weekly",
+  inboxPath: "Inbox.md",
+  dailyFormat: "YYYY-MM-DD",
+  weeklyFormat: "GGGG-[W]WW",
+  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+};
+
+function safeVaultPath(value: unknown, fallback: string) {
+  if (typeof value !== "string" || !value || value.startsWith("/") || value.split("/").includes("..")) {
+    return fallback;
+  }
+  return value.replace(/\/+$/, "");
+}
+
+async function loadDailyNoteConfig(client: FluxClient, vaultId: string) {
+  const value = await client.getVaultConfig(vaultId);
+  const timeZone = typeof value.timeZone === "string" ? value.timeZone : defaultDailyNoteConfig.timeZone;
+  new Intl.DateTimeFormat(undefined, { timeZone }).format();
+  return {
+    dailyFolder: safeVaultPath(value.dailyFolder, defaultDailyNoteConfig.dailyFolder),
+    weeklyFolder: safeVaultPath(value.weeklyFolder, defaultDailyNoteConfig.weeklyFolder),
+    inboxPath: safeVaultPath(value.inboxPath, defaultDailyNoteConfig.inboxPath),
+    dailyFormat:
+      typeof value.dailyFormat === "string" && value.dailyFormat
+        ? value.dailyFormat
+        : defaultDailyNoteConfig.dailyFormat,
+    weeklyFormat:
+      typeof value.weeklyFormat === "string" && value.weeklyFormat
+        ? value.weeklyFormat
+        : defaultDailyNoteConfig.weeklyFormat,
+    dailyTemplate:
+      typeof value.dailyTemplate === "string"
+        ? safeVaultPath(value.dailyTemplate, "")
+        : undefined,
+    weeklyTemplate:
+      typeof value.weeklyTemplate === "string"
+        ? safeVaultPath(value.weeklyTemplate, "")
+        : undefined,
+    timeZone,
+  } satisfies DailyNoteConfig;
+}
+
+function noteFileName(dateKey: string, format: string, weekly = false) {
+  const date = dateFromKey(dateKey);
+  const week = isoWeekKey(date);
+  const [weekYear, weekNumber] = week.split("-W");
+  const value = format
+    .replaceAll("[W]", "W")
+    .replaceAll("GGGG", weekYear)
+    .replaceAll("WW", weekNumber)
+    .replaceAll("YYYY", String(date.getFullYear()))
+    .replaceAll("MM", String(date.getMonth() + 1).padStart(2, "0"))
+    .replaceAll("DD", String(date.getDate()).padStart(2, "0"));
+  const stem = value.replace(/\.md$/i, "");
+  return `${stem || (weekly ? week : dateKey)}.md`;
+}
+
+function dateKeyInTimeZone(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+async function noteTemplate(
+  client: FluxClient,
+  vaultId: string,
+  path: string | undefined,
+  fallback: string,
+  replacements: Record<string, string>
+) {
+  if (!path) return fallback;
+  if (!(await client.getFileMetadata(vaultId, path))) {
+    throw new Error(`Configured template not found: ${path}`);
+  }
+  let content = (await client.readFile(vaultId, path)).content;
+  for (const [key, value] of Object.entries(replacements)) {
+    content = content.replaceAll(`{{${key}}}`, value);
+  }
+  return content;
+}
+
 function runWithToast<T>(operation: Promise<T>, feedback: AsyncFeedback) {
   return toast
     .promise(operation, {
@@ -587,8 +724,172 @@ export function FluxApp(props: FluxAppProps) {
 
   return (
     <ThemeProvider theme={theme} onThemeChange={changeTheme}>
-      <FluxAppContent {...props} />
+      {new URLSearchParams(window.location.search).has("quickCapture") ? (
+        <QuickCapture runtime={props.runtime} />
+      ) : (
+        <FluxAppContent {...props} />
+      )}
     </ThemeProvider>
+  );
+}
+
+function QuickCapture({ runtime }: { runtime: FluxRuntime }) {
+  const [vaults, setVaults] = useState<RecentVault[]>([]);
+  const [vaultId, setVaultId] = useState("");
+  const [target, setTarget] = useState<"inbox" | "daily">("inbox");
+  const [content, setContent] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    void runtime.connect().then(async () => {
+      if (!runtime.client) return;
+      const [recent, settings] = await Promise.all([
+        runtime.client.listRecentVaults(),
+        runtime.client.getAppSettings(),
+      ]);
+      setVaults(recent);
+      const configured = String(settings.quickCaptureVaultId ?? "");
+      const draft =
+        settings.quickCaptureDraft && typeof settings.quickCaptureDraft === "object"
+          ? (settings.quickCaptureDraft as Record<string, unknown>)
+          : undefined;
+      const draftVaultId = typeof draft?.vaultId === "string" ? draft.vaultId : "";
+      setVaultId(
+        recent.some((item) => item.vaultId === draftVaultId)
+          ? draftVaultId
+          : recent.some((item) => item.vaultId === configured)
+            ? configured
+            : ""
+      );
+      if (typeof draft?.content === "string") setContent(draft.content);
+      if (draft?.target === "inbox" || draft?.target === "daily") setTarget(draft.target);
+    });
+  }, [runtime]);
+
+  useEffect(() => {
+    if (!runtime.client || !content.trim()) return;
+    const timer = window.setTimeout(() => {
+      void runtime.client?.putAppSetting("quickCaptureDraft", { vaultId, target, content });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [runtime.client, vaultId, target, content]);
+
+  const save = async () => {
+    if (!runtime.client || !vaultId || !content.trim()) return;
+    const selected = vaults.find((item) => item.vaultId === vaultId);
+    if (!selected) return;
+    setSaving(true);
+    setError("");
+    try {
+      const vault = await runtime.client.openVault({ path: selected.path });
+      const config = await loadDailyNoteConfig(runtime.client, vault.id);
+      const date = dateKeyInTimeZone(new Date(), config.timeZone);
+      const path =
+        target === "inbox"
+          ? config.inboxPath
+          : `${config.dailyFolder}/${noteFileName(date, config.dailyFormat)}`;
+      const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+      if (parent) await runtime.client.createDirectory(vault.id, parent);
+      const addition = `\n\n${content.trim()}\n`;
+      const initial =
+        target === "daily"
+          ? await noteTemplate(
+              runtime.client,
+              vault.id,
+              config.dailyTemplate,
+              `# ${date}\n`,
+              { date }
+            )
+          : "";
+      let saved = false;
+      for (let attempt = 0; attempt < 3 && !saved; attempt += 1) {
+        const existing = await runtime.client.getFileMetadata(vault.id, path);
+        if (!existing) {
+          try {
+            await runtime.client.createFile({
+              vaultId: vault.id,
+              path,
+              content: initial ? initial.replace(/\s*$/, "") + addition : content.trim() + "\n",
+            });
+            saved = true;
+          } catch {
+            // Another writer may have created it; reread and append.
+          }
+          continue;
+        }
+        const document = await runtime.client.readFile(vault.id, path);
+        try {
+          await runtime.client.saveFile({
+            vaultId: vault.id,
+            path,
+            content: document.content.replace(/\s*$/, "") + addition,
+            expectedHash: document.contentHash,
+          });
+          saved = true;
+        } catch {
+          // Conflict: bounded reread and retry.
+        }
+      }
+      if (!saved) throw new Error("File changed repeatedly. Capture remains available.");
+      await runtime.client.putAppSetting("quickCaptureVaultId", vaultId);
+      await runtime.client.putAppSetting("quickCaptureDraft", null);
+      setContent("");
+      await runtime.hideWindow?.();
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex h-screen flex-col bg-background p-4 text-foreground">
+      <div className="flex items-center gap-2">
+        <select
+          aria-label="Capture vault"
+          value={vaultId}
+          onChange={(event) => setVaultId(event.target.value)}
+          className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-xs [border-color:var(--layout-separator)]"
+        >
+          <option value="">Choose a vault…</option>
+          {vaults.map((item) => (
+            <option key={item.vaultId} value={item.vaultId}>{item.displayName}</option>
+          ))}
+        </select>
+        <select
+          aria-label="Capture destination"
+          value={target}
+          onChange={(event) => setTarget(event.target.value as "inbox" | "daily")}
+          className="h-8 rounded-md border bg-background px-2 text-xs [border-color:var(--layout-separator)]"
+        >
+          <option value="inbox">Inbox</option>
+          <option value="daily">Today</option>
+        </select>
+      </div>
+      <textarea
+        autoFocus
+        aria-label="Quick capture"
+        value={content}
+        onChange={(event) => setContent(event.target.value)}
+        onKeyDown={(event) => {
+          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void save();
+        }}
+        placeholder="Capture a thought…"
+        className="mt-3 min-h-0 flex-1 resize-none rounded-lg border bg-background p-3 text-sm leading-6 outline-none focus:ring-2 focus:ring-ring/40 [border-color:var(--layout-separator)]"
+      />
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <span className="truncate text-xs text-destructive">{error}</span>
+        <button
+          type="button"
+          disabled={saving || !vaultId || !content.trim()}
+          onClick={() => void save()}
+          className="shrink-0 rounded-md bg-primary px-4 py-2 text-xs font-medium text-primary-foreground disabled:opacity-40"
+        >
+          {saving ? "Saving…" : "Save capture"}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -676,6 +977,42 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const [pdfExportDocument, setPdfExportDocument] = useState<DemoDocument | null>(null);
   const [pdfExportOpen, setPdfExportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [calendarDate, setCalendarDate] = useState(localDateKey);
+  const [dailyNoteConfig, setDailyNoteConfig] = useState(defaultDailyNoteConfig);
+  const calendarDays = useMemo(() => calendarGrid(calendarDate), [calendarDate]);
+  const calendarMonthLabel = useMemo(
+    () =>
+      new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(
+        dateFromKey(calendarDate)
+      ),
+    [calendarDate]
+  );
+  useEffect(() => {
+    if (!calendarOpen) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCalendarOpen(false);
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [calendarOpen]);
+  useEffect(() => {
+    let active = true;
+    if (!vault || !runtime.client) return;
+    void loadDailyNoteConfig(runtime.client, vault.id)
+      .then((config) => {
+        if (active) {
+          setDailyNoteConfig(config);
+          setCalendarDate(dateKeyInTimeZone(new Date(), config.timeZone));
+        }
+      })
+      .catch((cause) => {
+        if (active) setStatus(errorMessage(cause));
+      });
+    return () => {
+      active = false;
+    };
+  }, [runtime.client, vault]);
   const [sidebarRevealPath, setSidebarRevealPath] = useState<string | undefined>();
   const [sidebarSelectedPath, setSidebarSelectedPath] = useState<string | undefined>();
   const revealPathTimerRef = useRef<number | undefined>(undefined);
@@ -875,19 +1212,21 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     [runtime.client, sidebarIndexRevision, vault]
   );
   const loadDocumentReferences = useCallback(
-    (path: string) => {
+    (path: string, includeUnlinked = false) => {
       void sidebarIndexRevision;
       if (!runtime.client || !vault) {
         return Promise.resolve({ linked: [], unlinked: [], outgoing: [] });
       }
-      const key = `${vault.id}:${sidebarIndexRevision}:${path}`;
+      const key = `${vault.id}:${sidebarIndexRevision}:${path}:${includeUnlinked}`;
       const cached = referenceRequestsRef.current.get(key);
       if (cached) return cached;
       if (referenceRequestsRef.current.size >= 32) referenceRequestsRef.current.clear();
-      const request = runtime.client.getDocumentReferences(vault.id, path).catch((error) => {
+      const request = runtime.client
+        .getDocumentReferences(vault.id, path, includeUnlinked)
+        .catch((error) => {
         referenceRequestsRef.current.delete(key);
         throw error;
-      });
+        });
       referenceRequestsRef.current.set(key, request);
       return request;
     },
@@ -2172,21 +2511,12 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     if (!runtime.client || !vault || sourcePath === destinationPath) return false;
     try {
       const operation = (async () => {
-        for (const tab of tabs) {
-          if (!tab.document?.path) continue;
-          const key = documentSaveKey(vault.id, tab.document.path);
-          const timer = saveTimersRef.current.get(key);
-          if (timer) window.clearTimeout(timer);
-          saveTimersRef.current.delete(key);
-          pendingSavesRef.current.delete(key);
-          await enqueueSave({
-            vaultId: vault.id,
-            tabId: tab.id,
-            document: tab.document,
-            content: tab.document.content,
-          });
-        }
-        await runtime.client!.moveFile({ vaultId: vault.id, sourcePath, destinationPath });
+        await flushPendingSaves(vault.id);
+        const movedEntry = await runtime.client!.moveFile({
+          vaultId: vault.id,
+          sourcePath,
+          destinationPath,
+        });
         setTabs((current) =>
           current.map((tab) => {
             if (tab.deferred) {
@@ -2242,26 +2572,46 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             });
           }
         }
-        await refreshFiles();
-        for (const tab of tabs) {
-          if (!tab.document?.path) continue;
-          const nextPath = movedDocumentPath(tab.document.path, sourcePath, destinationPath);
-          const file = await runtime.client!.readFile(vault.id, nextPath);
-          const document: DemoDocument = {
-            title: titleFromPath(file.path),
-            path: file.path,
-            content: file.content,
-            contentHash: file.contentHash,
-          };
-          savedDocumentsRef.current.set(file.path, document);
-          updateTab(tab.id, (current) => ({ ...current, title: document.title, document }));
-          setVaultDocuments((current) => [
-            ...current.filter(
-              (item) => item.path !== tab.document?.path && item.path !== file.path
-            ),
-            document,
-          ]);
+        for (const [key, document] of saveBasesRef.current) {
+          const prefix = `${vault.id}:`;
+          if (!key.startsWith(prefix)) continue;
+          const path = key.slice(prefix.length);
+          const nextPath = movedDocumentPath(path, sourcePath, destinationPath);
+          if (nextPath !== path) {
+            saveBasesRef.current.delete(key);
+            saveBasesRef.current.set(documentSaveKey(vault.id, nextPath), {
+              ...document,
+              path: nextPath,
+              title: titleFromPath(nextPath),
+            });
+          }
         }
+        for (const [path, version] of vaultFileVersionsRef.current) {
+          const nextPath = movedDocumentPath(path, sourcePath, destinationPath);
+          if (nextPath !== path) {
+            vaultFileVersionsRef.current.delete(path);
+            vaultFileVersionsRef.current.set(nextPath, version);
+          }
+        }
+        setFileEntries((current) => {
+          const next = current.map((item) => {
+            const path = movedDocumentPath(item.path, sourcePath, destinationPath);
+            if (path === item.path) return item;
+            return item.path === sourcePath
+              ? movedEntry
+              : { ...item, path, name: path.split("/").at(-1) ?? item.name };
+          });
+          fileEntriesRef.current = next;
+          return next;
+        });
+        setExpandedFolders((current) =>
+          current.map((path) => movedDocumentPath(path, sourcePath, destinationPath))
+        );
+        loadedFoldersRef.current = new Set(
+          [...loadedFoldersRef.current].map((path) =>
+            movedDocumentPath(path, sourcePath, destinationPath)
+          )
+        );
         setStatus(`Moved · ${destinationPath}`);
       })();
       if (feedback) await runWithToast(operation, feedback);
@@ -2347,7 +2697,21 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                 !document.path || (document.path !== path && !document.path.startsWith(`${path}/`))
             )
           );
-          await refreshFiles();
+          setFileEntries((current) => {
+            const next = current.filter(
+              (entry) => entry.path !== path && !entry.path.startsWith(`${path}/`)
+            );
+            fileEntriesRef.current = next;
+            return next;
+          });
+          setExpandedFolders((current) =>
+            current.filter((entry) => entry !== path && !entry.startsWith(`${path}/`))
+          );
+          for (const loaded of [...loadedFoldersRef.current]) {
+            if (loaded === path || loaded.startsWith(`${path}/`)) {
+              loadedFoldersRef.current.delete(loaded);
+            }
+          }
           if (trashOpen) await refreshTrash();
           setStatus(`Moved to trash · ${path}`);
         })(),
@@ -3475,6 +3839,87 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     );
   };
 
+  const openDailyNote = async (date: string) => {
+    if (!vault || !runtime.client) return;
+    const path = `${dailyNoteConfig.dailyFolder}/${noteFileName(
+      date,
+      dailyNoteConfig.dailyFormat
+    )}`;
+    try {
+      await runtime.client.createDirectory(vault.id, dailyNoteConfig.dailyFolder);
+      const existing = await runtime.client.getFileMetadata(vault.id, path);
+      if (!existing) {
+        try {
+          const content = await noteTemplate(
+            runtime.client,
+            vault.id,
+            dailyNoteConfig.dailyTemplate,
+            `# ${date}\n\n`,
+            { date }
+          );
+          await runtime.client.createFile({
+            vaultId: vault.id,
+            path,
+            content,
+          });
+          await refreshFiles();
+        } catch {
+          // A simultaneous capture may have created today's note.
+        }
+      }
+      setCalendarOpen(false);
+      await openDocument(path);
+    } catch (cause) {
+      setStatus(errorMessage(cause));
+    }
+  };
+
+  const openWeeklyNote = async (date: string) => {
+    if (!vault || !runtime.client) return;
+    const week = isoWeekKey(dateFromKey(date));
+    const path = `${dailyNoteConfig.weeklyFolder}/${noteFileName(
+      date,
+      dailyNoteConfig.weeklyFormat,
+      true
+    )}`;
+    try {
+      await runtime.client.createDirectory(vault.id, dailyNoteConfig.weeklyFolder);
+      if (!(await runtime.client.getFileMetadata(vault.id, path))) {
+        try {
+          const content = await noteTemplate(
+            runtime.client,
+            vault.id,
+            dailyNoteConfig.weeklyTemplate,
+            `# ${week}\n\n`,
+            { date, week }
+          );
+          await runtime.client.createFile({
+            vaultId: vault.id,
+            path,
+            content,
+          });
+          await refreshFiles();
+        } catch {
+          // Another window won create race.
+        }
+      }
+      setCalendarOpen(false);
+      await openDocument(path);
+    } catch (cause) {
+      setStatus(errorMessage(cause));
+    }
+  };
+
+  const handleRuntimeCommand = useEffectEvent(
+    (command: "search" | "daily-today" | "calendar" | "settings") => {
+      if (command === "search") setLeftSidebarPane("search");
+      if (command === "daily-today") void openDailyNote(localDateKey());
+      if (command === "calendar") setCalendarOpen(true);
+      if (command === "settings") setSettingsOpen(true);
+    }
+  );
+  useEffect(() => runtime.onCommand?.(handleRuntimeCommand), [runtime]);
+
   const popOutTab = (tab: WorkspaceTab) => {
     const url = new URL(window.location.href);
     url.searchParams.set("popout", tab.title);
@@ -3853,6 +4298,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                 onCanvas={() => {
                   if (plugins["canvas"] !== false) openDocument("Canvas");
                 }}
+                onCalendar={() => setCalendarOpen(true)}
                 plugins={plugins}
               />
             }
@@ -4793,6 +5239,134 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             onOpenChange={setPdfExportOpen}
             onExport={runtime.exportPdf}
           />
+          {calendarOpen ? (
+            <div className="fixed inset-0 z-[205] grid place-items-center bg-black/50 p-4">
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="calendar-title"
+                className="w-full max-w-sm rounded-xl border bg-popover p-5 shadow-2xl [border-color:var(--layout-separator)]"
+              >
+                <div className="flex items-center justify-between">
+                  <button
+                    type="button"
+                    aria-label="Previous month"
+                    onClick={() => {
+                      const date = dateFromKey(calendarDate);
+                      date.setMonth(date.getMonth() - 1, 1);
+                      setCalendarDate(localDateKey(date));
+                    }}
+                    className="grid size-8 place-items-center rounded-md hover:bg-accent"
+                  >
+                    ‹
+                  </button>
+                  <div className="text-center">
+                    <h2 id="calendar-title" className="text-sm font-semibold">
+                      {calendarMonthLabel}
+                    </h2>
+                    <p className="text-[10px] text-muted-foreground">
+                      Week {isoWeekKey(dateFromKey(calendarDate))}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="Next month"
+                    onClick={() => {
+                      const date = dateFromKey(calendarDate);
+                      date.setMonth(date.getMonth() + 1, 1);
+                      setCalendarDate(localDateKey(date));
+                    }}
+                    className="grid size-8 place-items-center rounded-md hover:bg-accent"
+                  >
+                    ›
+                  </button>
+                </div>
+                <div className="mt-4 grid grid-cols-7 text-center text-[10px] font-medium text-muted-foreground">
+                  {["S", "M", "T", "W", "T", "F", "S"].map((day, index) => (
+                    <span key={`${day}-${index}`} className="py-1">{day}</span>
+                  ))}
+                </div>
+                <div className="grid grid-cols-7 gap-0.5">
+                  {calendarDays.map((day) => {
+                    const key = localDateKey(day);
+                    const selected = key === calendarDate;
+                    const currentMonth =
+                      day.getMonth() === dateFromKey(calendarDate).getMonth();
+                    const exists = fileEntries.some(
+                      (entry) =>
+                        entry.path ===
+                        `${dailyNoteConfig.dailyFolder}/${noteFileName(
+                          key,
+                          dailyNoteConfig.dailyFormat
+                        )}`
+                    );
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        aria-label={key}
+                        onClick={() => setCalendarDate(key)}
+                        onDoubleClick={() => void openDailyNote(key)}
+                        className={`relative grid aspect-square place-items-center rounded-md text-xs ${
+                          selected
+                            ? "bg-primary text-primary-foreground"
+                            : currentMonth
+                              ? "hover:bg-accent"
+                              : "text-muted-foreground/45 hover:bg-accent"
+                        }`}
+                      >
+                        {day.getDate()}
+                        {exists ? (
+                          <span
+                            aria-hidden="true"
+                            className={`absolute bottom-1 size-1 rounded-full ${
+                              selected ? "bg-primary-foreground" : "bg-primary"
+                            }`}
+                          />
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-3 text-xs text-muted-foreground">
+                  {fileEntries.some(
+                    (entry) =>
+                      entry.path ===
+                      `${dailyNoteConfig.dailyFolder}/${noteFileName(
+                        calendarDate,
+                        dailyNoteConfig.dailyFormat
+                      )}`
+                  )
+                    ? "A note exists for this date."
+                    : "A new note will be created."}
+                </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCalendarOpen(false)}
+                    className="rounded-md px-3 py-2 text-sm hover:bg-accent"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void openWeeklyNote(calendarDate)}
+                    className="rounded-md border px-3 py-2 text-sm [border-color:var(--layout-separator)]"
+                  >
+                    Open week
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!calendarDate}
+                    onClick={() => void openDailyNote(calendarDate)}
+                    className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40"
+                  >
+                    Open daily note
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
           <SettingsDialog
             open={settingsOpen}
             onOpenChange={setSettingsOpen}
@@ -4801,6 +5375,16 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
               openPluginManager();
             }}
             vaultName={vault?.name}
+            client={runtime.client}
+            vaults={recentVaults}
+            vaultId={vault?.id}
+            onVaultConfigChange={() => {
+              if (!runtime.client || !vault) return;
+              void loadDailyNoteConfig(runtime.client, vault.id)
+                .then(setDailyNoteConfig)
+                .catch((cause) => setStatus(errorMessage(cause)));
+            }}
+            getMCPServerCommand={runtime.getMCPServerCommand}
           />
           <AddBookmarkDialog
             key={`${bookmarkTarget?.path ?? bookmarkTarget?.title ?? "none"}:${addBookmarkDialogOpen}`}

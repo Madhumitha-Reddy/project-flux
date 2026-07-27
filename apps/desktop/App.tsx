@@ -9,6 +9,20 @@ const desktopRuntime: FluxRuntime = {
   client,
   statePersistence,
   getWindowId: async () => window.electronAPI?.getWindowId() ?? "main",
+  hideWindow: async () => window.electronAPI?.hideWindow(),
+  getMCPServerCommand: async () =>
+    window.electronAPI?.getMCPServerCommand() ?? { command: "", args: [] },
+  onCommand: (handler) =>
+    window.electronAPI?.onCommand((command) => {
+      if (
+        command === "search" ||
+        command === "daily-today" ||
+        command === "calendar" ||
+        command === "settings"
+      ) {
+        handler(command);
+      }
+    }) ?? (() => undefined),
   setTheme: async (theme) => {
     await window.electronAPI?.setTheme(theme);
   },

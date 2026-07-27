@@ -121,7 +121,10 @@ func (h *Server) addWriteTools(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{Name: "flux_delete_file", Description: "Move one file to Flux trash when expected content hash still matches."}, h.deleteFile)
 }
 
-func (h *Server) listVaults(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, vaultListOutput, error) {
+func (h *Server) listVaults(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, vaultListOutput, error) {
+	if err := h.policy.Validate(ctx); err != nil {
+		return nil, vaultListOutput{}, err
+	}
 	return nil, vaultListOutput{VaultIDs: h.policy.VaultIDs()}, nil
 }
 

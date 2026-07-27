@@ -6,6 +6,13 @@ let nextWatcherId = 0;
 contextBridge.exposeInMainWorld("electronAPI", {
   ping: () => ipcRenderer.invoke("ping"),
   getWindowId: () => ipcRenderer.invoke("get-window-id"),
+  hideWindow: () => ipcRenderer.invoke("hide-window"),
+  getMCPServerCommand: () => ipcRenderer.invoke("get-mcp-server-command"),
+  onCommand: (handler: (command: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, command: string) => handler(command);
+    ipcRenderer.on("flux-command", listener);
+    return () => ipcRenderer.off("flux-command", listener);
+  },
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
   getAppVersion: () => ipcRenderer.invoke("get-app-version"),
   getPerformanceStats: () => ipcRenderer.invoke("get-performance-stats"),

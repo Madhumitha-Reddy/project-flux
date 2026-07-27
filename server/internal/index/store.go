@@ -180,10 +180,26 @@ func (s *Store) ListFiles() ([]domain.FileEntry, error) {
 	return entries, nil
 }
 
-func (s *Store) LinkSourcePaths() ([]string, error) {
-	var paths []string
-	err := s.db.Model(&LinkRecord{}).Distinct().Order("source_path").Pluck("source_path", &paths).Error
-	return paths, err
+func (s *Store) LinkSourcePathsForMove(sourcePath string) ([]string, error) {
+	graph, err := s.Graph()
+	if err != nil {
+		return nil, err
+	}
+	affected := make(map[string]struct{})
+	moved := func(candidate string) bool {
+		return candidate == sourcePath || strings.HasPrefix(candidate, sourcePath+"/")
+	}
+	for _, edge := range graph.Edges {
+		if moved(edge.Source) || moved(edge.Target) {
+			affected[edge.Source] = struct{}{}
+		}
+	}
+	paths := make([]string, 0, len(affected))
+	for candidate := range affected {
+		paths = append(paths, candidate)
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 func (s *Store) ListChildren(parent, cursor string, limit int) ([]domain.FileEntry, string, error) {

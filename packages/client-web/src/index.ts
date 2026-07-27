@@ -109,6 +109,40 @@ export class WebFluxClient implements FluxClient {
     });
   }
 
+  getVaultConfig(vaultId: string) {
+    return this.request<Record<string, unknown>>(
+      `/vaults/${encodeURIComponent(vaultId)}/config`
+    );
+  }
+
+  putVaultConfig(vaultId: string, value: Record<string, unknown>) {
+    return this.request<void>(`/vaults/${encodeURIComponent(vaultId)}/config`, {
+      method: "PUT",
+      body: JSON.stringify(value),
+    });
+  }
+
+  listMCPConnections() {
+    return this.request<import("@flux/bridge-contract").MCPConnection[]>("/mcp-connections");
+  }
+
+  createMCPConnection(request: {
+    name: string;
+    mode: import("@flux/bridge-contract").MCPConnection["mode"];
+    vaultIds: string[];
+  }) {
+    return this.request<import("@flux/bridge-contract").MCPConnectionCredential>(
+      "/mcp-connections",
+      { method: "POST", body: JSON.stringify(request) }
+    );
+  }
+
+  revokeMCPConnection(connectionId: string) {
+    return this.request<void>(`/mcp-connections/${encodeURIComponent(connectionId)}`, {
+      method: "DELETE",
+    });
+  }
+
   listPlugins() {
     return this.request<PluginCatalogEntry[]>("/plugins");
   }
@@ -287,8 +321,9 @@ export class WebFluxClient implements FluxClient {
     );
   }
 
-  getDocumentReferences(vaultId: string, path: string) {
+  getDocumentReferences(vaultId: string, path: string, includeUnlinked = false) {
     const params = new URLSearchParams({ path });
+    if (includeUnlinked) params.set("includeUnlinked", "true");
     return this.request<DocumentReferences>(
       `/vaults/${encodeURIComponent(vaultId)}/references?${params.toString()}`
     );

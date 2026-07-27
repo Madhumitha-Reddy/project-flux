@@ -59,3 +59,6 @@ bun run pack
 Install new version, activate it, enable for test vault, run contributed command. Roll back from
 plugin manager when new version fails. Flux currently records failures and last error, not usage
 analytics.
+
+
+<h1> Hello </h1>

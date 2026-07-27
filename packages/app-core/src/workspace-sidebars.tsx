@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -44,7 +44,6 @@ import type { DemoDocument } from "./markdown-editor";
 import {
   buildLinkIndex,
   linkedMentionsFor,
-  unlinkedMentionsFor,
   type DocumentMention,
 } from "./link-index";
 import { VaultExplorer } from "./vault-explorer";
@@ -1012,7 +1011,7 @@ function RightContent({
   activeDocument: DemoDocument | null;
   documents: DemoDocument[];
   onOpenDocument: (title: string) => void;
-  loadReferences?: (path: string) => Promise<DocumentReferences>;
+  loadReferences?: (path: string, includeUnlinked?: boolean) => Promise<DocumentReferences>;
   loadFacets?: () => Promise<VaultFacets>;
   onSearchTag?: (tag: string) => void;
   onNavigateHeading?: (heading: string, line: number) => void;
@@ -1029,6 +1028,8 @@ function RightContent({
   const [facets, setFacets] = useState<VaultFacets>();
   const [referenceLoading, setReferenceLoading] = useState(false);
   const [referenceError, setReferenceError] = useState("");
+  const [unlinkedPath, setUnlinkedPath] = useState("");
+  const referenceRequestRef = useRef(0);
   const [facetLoading, setFacetLoading] = useState(false);
   const [facetError, setFacetError] = useState("");
   const activePath = activeDocument?.path;
@@ -1041,21 +1042,22 @@ function RightContent({
     let current = true;
     const timer = window.setTimeout(() => {
       if (!current) return;
+      const request = ++referenceRequestRef.current;
       setReferenceLoading(true);
       setReferenceError("");
       void loadReferences(activePath)
         .then((result) => {
-          if (current) {
+          if (current && request === referenceRequestRef.current) {
             setReferences(result);
             setReferencePath(activePath);
           }
         })
         .catch((error) => {
-          if (current)
+          if (current && request === referenceRequestRef.current)
             setReferenceError(error instanceof Error ? error.message : "Could not load links");
         })
         .finally(() => {
-          if (current) setReferenceLoading(false);
+          if (current && request === referenceRequestRef.current) setReferenceLoading(false);
         });
     }, 120);
     return () => {
@@ -1190,12 +1192,13 @@ function RightContent({
           target: activeTitle,
         }))
       : linkedMentionsFor(documents, activeTitle);
-    const unlinkedMentions = visibleReferences
+    const unlinkedExpanded = unlinkedPath === activePath;
+    const unlinkedMentions = unlinkedExpanded && visibleReferences
       ? visibleReferences.unlinked.map((mention) => ({
           ...mention,
           target: activeTitle,
         }))
-      : unlinkedMentionsFor(documents, activeDocument.title);
+      : [];
     const linked = groupMentions(linkedMentions);
     const unlinked = groupMentions(unlinkedMentions);
     const mentionCount = (groups: Array<[string, DocumentMention[]]>) =>
@@ -1315,11 +1318,52 @@ function RightContent({
           ) : (
             <p className="py-2 text-muted-foreground">No backlinks found.</p>
           )}
-          <div className="mt-3 flex items-center justify-between py-1 font-medium text-muted-foreground">
-            <span>Unlinked mentions</span>
-            <span className="text-[10px]">{mentionCount(unlinked)}</span>
-          </div>
-          {collapsedResults ? null : unlinked.length ? (
+          <button
+            type="button"
+            aria-expanded={unlinkedExpanded}
+            title={unlinkedExpanded ? "Collapse unlinked mentions" : "Load unlinked mentions"}
+            onClick={() => {
+              if (unlinkedExpanded) {
+                referenceRequestRef.current += 1;
+                setUnlinkedPath("");
+                setReferenceLoading(false);
+                return;
+              }
+              if (!activePath || !loadReferences) return;
+              const request = ++referenceRequestRef.current;
+              setUnlinkedPath(activePath);
+              setReferenceLoading(true);
+              setReferenceError("");
+              void loadReferences(activePath, true)
+                .then((result) => {
+                  if (request === referenceRequestRef.current) {
+                    setReferences(result);
+                    setReferencePath(activePath);
+                  }
+                })
+                .catch((error) => {
+                  if (request === referenceRequestRef.current)
+                    setReferenceError(
+                      error instanceof Error ? error.message : "Could not load unlinked mentions"
+                    );
+                })
+                .finally(() => {
+                  if (request === referenceRequestRef.current) setReferenceLoading(false);
+                });
+            }}
+            className="mt-3 flex w-full items-center justify-between rounded-md py-1 font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <span className="flex items-center gap-1">
+              <ChevronRight
+                className={cn("size-3 transition-transform", unlinkedExpanded && "rotate-90")}
+              />
+              Unlinked mentions
+            </span>
+            {unlinkedExpanded ? (
+              <span className="text-[10px]">{mentionCount(unlinked)}</span>
+            ) : null}
+          </button>
+          {!unlinkedExpanded || collapsedResults ? null : unlinked.length ? (
             mentionRows(unlinked, false)
           ) : (
             <p className="py-2 text-muted-foreground">No unlinked mentions found.</p>
@@ -1582,7 +1626,7 @@ function RightSidebar({
   activeDocument: DemoDocument | null;
   documents: DemoDocument[];
   onOpenDocument: (title: string) => void;
-  loadReferences?: (path: string) => Promise<DocumentReferences>;
+  loadReferences?: (path: string, includeUnlinked?: boolean) => Promise<DocumentReferences>;
   loadFacets?: () => Promise<VaultFacets>;
   onSearchTag?: (tag: string) => void;
   onNavigateHeading?: (heading: string, line: number) => void;
@@ -1745,7 +1789,7 @@ export function WorkspaceRightSidebar({
   activeDocument: DemoDocument | null;
   documents: DemoDocument[];
   onOpenDocument: (title: string) => void;
-  loadReferences?: (path: string) => Promise<DocumentReferences>;
+  loadReferences?: (path: string, includeUnlinked?: boolean) => Promise<DocumentReferences>;
   loadFacets?: () => Promise<VaultFacets>;
   onSearchTag?: (tag: string) => void;
   onNavigateHeading?: (heading: string, line: number) => void;
@@ -1771,12 +1815,14 @@ export function WorkspaceRibbon({
   onFiles,
   onPlugins,
   onCanvas,
+  onCalendar,
   plugins,
 }: {
   onGraph?: () => void;
   onFiles?: () => void;
   onPlugins?: () => void;
   onCanvas?: () => void;
+  onCalendar?: () => void;
   plugins?: Record<string, boolean>;
 }) {
   const showFiles = !plugins || plugins["file-explorer"] !== false;
@@ -1803,7 +1849,7 @@ export function WorkspaceRibbon({
         </IconButton>
       ) : null}
       {showDailyNotes ? (
-        <IconButton label="Calendar">
+        <IconButton label="Calendar" onClick={onCalendar}>
           <CalendarDays className="size-4" />
         </IconButton>
       ) : null}

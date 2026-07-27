@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Dialog } from "radix-ui";
 import {
   Blocks,
+  CalendarDays,
   ChevronDown,
   KeyRound,
   Paintbrush,
@@ -11,9 +12,16 @@ import {
   Search,
   Settings,
   Shield,
+  Terminal,
   Trash2,
   X,
 } from "lucide-react";
+import type {
+  FluxClient,
+  MCPConnection,
+  MCPConnectionCredential,
+  RecentVault,
+} from "@flux/bridge-contract";
 import { useTheme } from "@flux/shared-ui/components/theme-provider";
 import {
   useFluxSettings,
@@ -24,13 +32,25 @@ import {
 } from "./settings-store";
 
 type SettingsPage =
-  "general" | "editor" | "appearance" | "keychain" | "core-plugins" | "community-plugins";
+  | "general"
+  | "editor"
+  | "appearance"
+  | "keychain"
+  | "daily-notes"
+  | "mcp"
+  | "core-plugins"
+  | "community-plugins";
 
 interface SettingsDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onOpenPlugins: () => void;
   vaultName?: string;
+  client?: FluxClient | null;
+  vaults?: RecentVault[];
+  vaultId?: string;
+  onVaultConfigChange?: () => void;
+  getMCPServerCommand?: () => Promise<{ command: string; args: string[] }>;
 }
 
 function SettingRow({
@@ -157,6 +177,8 @@ const navItems: Array<{
   { id: "editor", label: "Editor", icon: Pencil },
   { id: "appearance", label: "Appearance", icon: Paintbrush },
   { id: "keychain", label: "Keychain", icon: KeyRound },
+  { id: "daily-notes", label: "Daily Notes", icon: CalendarDays },
+  { id: "mcp", label: "MCP Connections", icon: Terminal },
   { id: "core-plugins", label: "Core Plugins", icon: Plug, section: "Plugins" },
   { id: "community-plugins", label: "Community Plugins", icon: Blocks },
 ];
@@ -911,11 +933,275 @@ const pageComponents: Partial<Record<SettingsPage, React.ComponentType<{ vaultNa
   "core-plugins": CorePluginsPage,
 };
 
+const dailyConfigDefaults = {
+  dailyFolder: "Daily",
+  weeklyFolder: "Daily/Weekly",
+  inboxPath: "Inbox.md",
+  dailyFormat: "YYYY-MM-DD",
+  weeklyFormat: "GGGG-[W]WW",
+  dailyTemplate: "",
+  weeklyTemplate: "",
+  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+};
+
+function DailyNotesPage({
+  client,
+  vaultId,
+  onSaved,
+}: {
+  client: FluxClient | null;
+  vaultId?: string;
+  onSaved?: () => void;
+}) {
+  const [config, setConfig] = useState(dailyConfigDefaults);
+  const [message, setMessage] = useState("");
+  useEffect(() => {
+    let active = true;
+    if (!client || !vaultId) return;
+    void client
+      .getVaultConfig(vaultId)
+      .then((value) => {
+        if (active) setConfig({ ...dailyConfigDefaults, ...value });
+      })
+      .catch((cause) => {
+        if (active) setMessage(cause instanceof Error ? cause.message : String(cause));
+      });
+    return () => {
+      active = false;
+    };
+  }, [client, vaultId]);
+  const fields: Array<[keyof typeof dailyConfigDefaults, string, string]> = [
+    ["dailyFolder", "Daily note folder", "Daily"],
+    ["weeklyFolder", "Weekly note folder", "Daily/Weekly"],
+    ["inboxPath", "Quick Capture inbox", "Inbox.md"],
+    ["dailyFormat", "Daily filename format", "YYYY-MM-DD"],
+    ["weeklyFormat", "Weekly filename format", "GGGG-[W]WW"],
+    ["dailyTemplate", "Daily template", "Templates/Daily.md"],
+    ["weeklyTemplate", "Weekly template", "Templates/Weekly.md"],
+    ["timeZone", "IANA time zone", "Asia/Kolkata"],
+  ];
+  return (
+    <div>
+      <h2 className="text-xl font-semibold">Daily Notes</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Stored per vault in protected <code>.flux/config.json</code>.
+      </p>
+      <div className="mt-6 space-y-4">
+        {fields.map(([key, label, placeholder]) => (
+          <label key={key} className="block">
+            <span className="text-xs font-medium">{label}</span>
+            <input
+              value={config[key]}
+              placeholder={placeholder}
+              onChange={(event) =>
+                setConfig((current) => ({ ...current, [key]: event.target.value }))
+              }
+              className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm [border-color:var(--layout-separator)]"
+            />
+          </label>
+        ))}
+      </div>
+      <div className="mt-5 flex items-center justify-between">
+        <span className="text-xs text-muted-foreground">{message}</span>
+        <button
+          type="button"
+          disabled={!client || !vaultId}
+          onClick={() => {
+            if (!client || !vaultId) return;
+            setMessage("");
+            void client
+              .putVaultConfig(vaultId, config)
+              .then(() => {
+                setMessage("Saved");
+                onSaved?.();
+              })
+              .catch((cause) =>
+                setMessage(cause instanceof Error ? cause.message : String(cause))
+              );
+          }}
+          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-40"
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MCPConnectionsPage({
+  client,
+  vaults,
+  getMCPServerCommand,
+}: {
+  client: FluxClient | null;
+  vaults: RecentVault[];
+  getMCPServerCommand?: () => Promise<{ command: string; args: string[] }>;
+}) {
+  const [connections, setConnections] = useState<MCPConnection[]>([]);
+  const [name, setName] = useState("VS Code");
+  const [vaultIds, setVaultIds] = useState<string[]>([]);
+  const [mode, setMode] = useState<MCPConnection["mode"]>("guided_write");
+  const [credential, setCredential] = useState<MCPConnectionCredential | null>(null);
+  const [config, setConfig] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    void client
+      ?.listMCPConnections()
+      .then((items) => {
+        if (active) setConnections(items);
+      })
+      .catch((cause) => {
+        if (active) setError(cause instanceof Error ? cause.message : String(cause));
+      });
+    return () => {
+      active = false;
+    };
+  }, [client]);
+
+  const create = async () => {
+    if (!client || vaultIds.length === 0 || !name.trim()) return;
+    setError("");
+    try {
+      const created = await client.createMCPConnection({
+        name: name.trim(),
+        mode,
+        vaultIds,
+      });
+      const executable = await getMCPServerCommand?.();
+      const value = {
+        servers: {
+          flux: {
+            type: "stdio",
+            command: executable?.command ?? "flux-server",
+            args: [
+              ...(executable?.args ?? ["mcp"]),
+              "--connection",
+              created.id,
+              "--secret",
+              created.secret,
+            ],
+          },
+        },
+      };
+      setCredential(created);
+      setConfig(JSON.stringify(value, null, 2));
+      setConnections(await client.listMCPConnections());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  return (
+    <div>
+      <h2 className="text-xl font-semibold">MCP connections</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Grant an AI client access to selected vaults. Secrets are shown once.
+      </p>
+      <div className="mt-6 grid gap-3 rounded-lg border p-4 [border-color:var(--layout-separator)]">
+        <input
+          aria-label="Connection name"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          className="h-9 rounded-md border bg-background px-3 text-sm [border-color:var(--layout-separator)]"
+        />
+        <fieldset className="rounded-md border p-3 [border-color:var(--layout-separator)]">
+          <legend className="px-1 text-xs font-medium text-muted-foreground">Granted vaults</legend>
+          {vaults.map((vault) => (
+            <label key={vault.vaultId} className="flex items-center gap-2 py-1 text-sm">
+              <input
+                type="checkbox"
+                checked={vaultIds.includes(vault.vaultId)}
+                onChange={(event) =>
+                  setVaultIds((current) =>
+                    event.target.checked
+                      ? [...current, vault.vaultId]
+                      : current.filter((id) => id !== vault.vaultId)
+                  )
+                }
+              />
+              <span className="truncate">{vault.displayName}</span>
+            </label>
+          ))}
+          {vaults.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Open a vault before creating a connection.</p>
+          ) : null}
+        </fieldset>
+        <select
+          aria-label="Permission mode"
+          value={mode}
+          onChange={(event) => setMode(event.target.value as MCPConnection["mode"])}
+          className="h-9 rounded-md border bg-background px-3 text-sm [border-color:var(--layout-separator)]"
+        >
+          <option value="read_only">Read only</option>
+          <option value="guided_write">Guided writes</option>
+          <option value="trusted_workspace">Trusted workspace</option>
+        </select>
+        <button
+          type="button"
+          disabled={!client || vaultIds.length === 0 || !name.trim()}
+          onClick={() => void create()}
+          className="h-9 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-40"
+        >
+          Create connection
+        </button>
+      </div>
+      {credential ? (
+        <div className="mt-4 rounded-lg border p-4 [border-color:var(--layout-separator)]">
+          <div className="text-sm font-medium">Copy this configuration now</div>
+          <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-muted p-3 text-[11px]">{config}</pre>
+          <button
+            type="button"
+            onClick={() => void navigator.clipboard.writeText(config)}
+            className="mt-2 rounded-md border px-3 py-1.5 text-xs [border-color:var(--layout-separator)]"
+          >
+            Copy configuration
+          </button>
+        </div>
+      ) : null}
+      <div className="mt-5 space-y-2">
+        {connections
+          .filter((connection) => !connection.revokedAt)
+          .map((connection) => (
+            <div
+              key={connection.id}
+              className="flex items-center justify-between rounded-md border px-3 py-2 [border-color:var(--layout-separator)]"
+            >
+              <div>
+                <div className="text-sm font-medium">{connection.name}</div>
+                <div className="text-xs text-muted-foreground">
+                  {connection.mode.replaceAll("_", " ")} · {connection.vaultIds.length} vault
+                </div>
+              </div>
+              <button
+                type="button"
+                className="text-xs text-destructive"
+                onClick={() =>
+                  void client?.revokeMCPConnection(connection.id).then(async () => {
+                    setConnections((await client.listMCPConnections()).filter((item) => !item.revokedAt));
+                  })
+                }
+              >
+                Revoke
+              </button>
+            </div>
+          ))}
+      </div>
+      {error ? <p className="mt-3 text-xs text-destructive">{error}</p> : null}
+    </div>
+  );
+}
+
 export function SettingsDialog({
   open,
   onOpenChange,
   onOpenPlugins,
   vaultName = "",
+  client = null,
+  vaults = [],
+  vaultId,
+  onVaultConfigChange,
+  getMCPServerCommand,
 }: SettingsDialogProps) {
   const [activePage, setActivePage] = useState<SettingsPage>("general");
   const ActivePageComponent = pageComponents[activePage] ?? GeneralPage;
@@ -950,6 +1236,18 @@ export function SettingsDialog({
           <div className="flex-1 overflow-y-auto p-8">
             {activePage === "community-plugins" ? (
               <CommunityPluginsPage onOpenPlugins={onOpenPlugins} />
+            ) : activePage === "mcp" ? (
+              <MCPConnectionsPage
+                client={client}
+                vaults={vaults}
+                getMCPServerCommand={getMCPServerCommand}
+              />
+            ) : activePage === "daily-notes" ? (
+              <DailyNotesPage
+                client={client}
+                vaultId={vaultId}
+                onSaved={onVaultConfigChange}
+              />
             ) : (
               <ActivePageComponent vaultName={vaultName} />
             )}
