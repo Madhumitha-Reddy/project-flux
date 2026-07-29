@@ -596,9 +596,12 @@ function MarkdownSource({
               display: "block",
               boxSizing: "border-box",
               width: "100%",
-              margin: "0.55rem 0",
-              cursor: "text",
+              margin: "0.25rem 0", // Reduced vertical spacing
+              cursor: "default",
+              userSelect: "none",
             },
+            ".cm-live-block > :first-child": { marginTop: "0" },
+            ".cm-live-block > :last-child": { marginBottom: "0" },
             ".cm-live-code-block pre": {
               margin: "0",
               overflowX: "auto",
@@ -656,24 +659,42 @@ function MarkdownSource({
             },
             ".cm-tooltip-autocomplete": {
               overflow: "hidden",
-              border: "1px solid var(--layout-separator) !important",
+              border: "1px solid var(--border) !important",
               borderRadius: "0.5rem !important",
               backgroundColor: "var(--popover) !important",
               color: "var(--popover-foreground) !important",
-              boxShadow: "0 10px 28px color-mix(in oklab, black 22%, transparent)",
-              padding: "0.25rem",
+              boxShadow: "0 8px 24px color-mix(in oklab, black 40%, transparent)",
+              padding: "0.5rem 0.6rem",
+              minWidth: "28rem",
+              maxHeight: "20rem !important",
             },
-            ".cm-tooltip-autocomplete > ul": { maxHeight: "18rem", fontFamily: "var(--font-sans)" },
+            ".cm-tooltip-autocomplete > ul": { maxHeight: "20rem !important", fontFamily: "var(--font-sans)" },
             ".cm-tooltip-autocomplete > ul > li": {
-              borderRadius: "0.3rem",
-              padding: "0.3rem 0.55rem",
-              lineHeight: "1.35",
+              borderRadius: "0.35rem",
+              padding: "0.85rem 0.75rem",
+              lineHeight: "1.5",
+              marginBottom: "0.6rem",
+            },
+            ".cm-tooltip-autocomplete > ul > li:last-child": {
+              marginBottom: "0",
             },
             ".cm-tooltip-autocomplete > ul > li[aria-selected]": {
-              backgroundColor: "var(--accent)",
-              color: "var(--accent-foreground)",
+              backgroundColor: "var(--muted)",
+              color: "var(--foreground)",
             },
-            ".cm-completionDetail": { color: "var(--muted-foreground)", fontStyle: "normal" },
+            ".cm-completionLabel": {
+              display: "block",
+              fontSize: "0.85rem",
+              fontWeight: "400",
+            },
+            ".cm-completionDetail": {
+              display: "block",
+              color: "var(--muted-foreground)",
+              fontStyle: "normal",
+              fontSize: "0.65rem",
+              marginTop: "0.2rem",
+              marginLeft: "0",
+            },
             ".cm-line.cm-live-codeblock": {
               backgroundColor: "var(--card)",
               borderLeft: "1px solid var(--layout-separator)",
@@ -848,7 +869,7 @@ export function MarkdownEditor({
   documents?: DemoDocument[];
 }) {
   const editorRootRef = useRef<HTMLDivElement>(null);
-  const { frontmatter, body } = splitFrontmatter(document.content);
+  const { frontmatter, body: rawBody } = splitFrontmatter(document.content);
   const activeTitle = document.path ?? document.title;
   const linkedMentions = useMemo(
     () => (showBacklinks ? linkedMentionsFor(documents, activeTitle) : []),
@@ -858,6 +879,23 @@ export function MarkdownEditor({
     () => (showBacklinks ? unlinkedMentionsFor(documents, activeTitle) : []),
     [activeTitle, documents, showBacklinks]
   );
+  const isDailyNote = useMemo(() => {
+    return document.path?.includes("Daily/") || /^\d{4}-\d{2}-\d{2}$/.test(document.title);
+  }, [document.path, document.title]);
+
+  const { body, strippedPrefix } = useMemo(() => {
+    if (!isDailyNote) return { body: rawBody, strippedPrefix: "" };
+    const heading = `# ${document.title}`;
+    const match = rawBody.match(/^([ \t]*)/);
+    const leadingWhitespace = match ? match[1] : "";
+    const trimmed = rawBody.slice(leadingWhitespace.length);
+    if (trimmed.startsWith(heading) && (trimmed.length === heading.length || trimmed[heading.length] === "\n")) {
+      const prefixEnd = leadingWhitespace.length + heading.length;
+      const afterHeading = rawBody[prefixEnd] === "\n" ? prefixEnd + 1 : prefixEnd;
+      return { body: rawBody.slice(afterHeading), strippedPrefix: rawBody.slice(0, afterHeading) };
+    }
+    return { body: rawBody, strippedPrefix: "" };
+  }, [rawBody, isDailyNote, document.title]);
 
   const groupMentions = (mentions: ReturnType<typeof linkedMentionsFor>) => {
     const grouped = new Map<string, typeof mentions>();
@@ -1042,7 +1080,7 @@ export function MarkdownEditor({
                 }
               : undefined
           }
-          onChange={(value) => onChange(frontmatter + value)}
+          onChange={(value) => onChange(frontmatter + strippedPrefix + value)}
           documentPath={document.path ?? document.title}
           frontmatterLines={frontmatter ? frontmatter.split("\n").length - 1 : 0}
         />
