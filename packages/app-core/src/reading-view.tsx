@@ -124,7 +124,7 @@ function obsidianInline(md: MarkdownIt) {
 }
 
 const md: MarkdownIt = new MarkdownIt({
-  html: false,
+  html: true,
   linkify: true,
   typographer: true,
   highlight(code, language) {
