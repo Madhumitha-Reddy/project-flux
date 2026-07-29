@@ -239,6 +239,7 @@ func (h *Handler) installMarketplacePlugin(c *gin.Context) {
 type installPluginRequest struct {
 	PackageBase64 string `json:"packageBase64" binding:"required"`
 	SHA256        string `json:"sha256" binding:"required"`
+	Development   bool   `json:"development,omitempty"`
 }
 
 func (h *Handler) installPlugin(c *gin.Context) {
@@ -248,6 +249,10 @@ func (h *Handler) installPlugin(c *gin.Context) {
 	var request installPluginRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		writeRequestError(c, err)
+		return
+	}
+	if request.Development && h.desktopToken == "" {
+		c.JSON(http.StatusForbidden, gin.H{"code": "desktop_only", "error": "development plugins require the local desktop runtime"})
 		return
 	}
 	data, err := base64.StdEncoding.DecodeString(request.PackageBase64)
@@ -273,7 +278,12 @@ func (h *Handler) installPlugin(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
-	result, err := h.plugins.InstallPackage(ctx, name, request.SHA256)
+	var result plugins.InstallResult
+	if request.Development {
+		result, err = h.plugins.InstallDevelopmentPackage(ctx, name, request.SHA256)
+	} else {
+		result, err = h.plugins.InstallPackage(ctx, name, request.SHA256)
+	}
 	if err != nil {
 		writePluginError(c, err)
 		return

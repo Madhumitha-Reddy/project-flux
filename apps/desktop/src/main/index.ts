@@ -201,8 +201,14 @@ async function ensureBackend() {
     throw new Error(`Configured FLUX backend is unavailable at ${externalBackendOrigin}`);
   }
 
-  if ((await attachPublishedBackend()) && (await backendReady())) return;
-  await stopStalePublishedBackend(Boolean(backendOrigin));
+  if (isDev) {
+    // Vite main-process reloads must recompile Go instead of reattaching the
+    // healthy daemon built from the previous source revision.
+    await stopStalePublishedBackend(true);
+  } else {
+    if ((await attachPublishedBackend()) && (await backendReady())) return;
+    await stopStalePublishedBackend(Boolean(backendOrigin));
+  }
 
   const backendEnvironment = {
     ...process.env,
@@ -300,12 +306,29 @@ function createWindow(targetUrl?: string) {
     return { action: 'allow' };
   });
 
-  if (devServerUrl) {
-    void window.loadURL(targetUrl ?? devServerUrl);
-  } else {
-    if (targetUrl?.startsWith("file:")) void window.loadFile(fileURLToPath(targetUrl));
-    else void window.loadFile(path.join(currentDirectory, "../dist/index.html"));
-  }
+  const loadWindowContent = () => {
+    if (devServerUrl) {
+      return window.loadURL(targetUrl ?? devServerUrl);
+    }
+    if (targetUrl?.startsWith("file:")) return window.loadFile(fileURLToPath(targetUrl));
+    return window.loadFile(path.join(currentDirectory, "../dist/index.html"));
+  };
+  void loadWindowContent();
+
+  let lastRendererRecovery = 0;
+  window.webContents.on("render-process-gone", (_event, details) => {
+    if (
+      details.reason === "clean-exit" ||
+      window.isDestroyed() ||
+      Date.now() - lastRendererRecovery < 5_000
+    ) {
+      return;
+    }
+    lastRendererRecovery = Date.now();
+    setTimeout(() => {
+      if (!window.isDestroyed()) void loadWindowContent();
+    }, 250).unref();
+  });
 
   if (!mainWindow) mainWindow = window;
   const windowId = window.webContents.id;

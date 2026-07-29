@@ -32,8 +32,10 @@ bun run validate
 bun run pack
 ```
 
-`pack` prints artifact path and SHA-256. Rebuild after code changes. Increment manifest version
-before installing an update.
+`pack` prints artifact path and SHA-256. Repeated packs overwrite the previous artifact.
+
+Installing that artifact through **Install from file…** is a normal, bounded production install.
+Flux does not poll locally installed plugins or infer development mode from their source.
 
 ## Install and run
 
@@ -51,14 +53,26 @@ are per vault. Installing does not silently enable plugin in every vault.
 ## Development loop
 
 ```sh
-# edit src/main.ts and flux.plugin.json
-bun run validate
-bun run pack
+bun run dev
 ```
 
-Install new version, activate it, enable for test vault, run contributed command. Roll back from
-plugin manager when new version fails. Flux currently records failures and last error, not usage
-analytics.
+`dev` watches `src/` and `flux.plugin.json`, runs the plugin's `build` script, and uploads each
+successful build to the authenticated local Flux desktop daemon. Open plugin views refresh while
+you edit; keeping Plugins or a plugin view open also reloads worker code. Keep Flux desktop
+running and use a disposable test vault.
 
+Running `dev` is the explicit opt-in to development mode. Only plugin versions installed through
+that command are checked for live updates while their view or the plugin manager is open.
+Development reload is desktop-only and never inferred for file or marketplace installs. It may
+update a same-version manifest, but cannot expand required permissions. Disable and reinstall to
+review new permissions. Stop watcher with `Ctrl+C`.
 
-<h1> Hello </h1>
+For production, increment manifest version, run `bun run pack`, then install the artifact.
+
+## UI
+
+Views are sandboxed HTML webviews. Bundle React/shadcn and CSS into `dist`; do not import Flux
+React components or address host DOM. Use themeable CSS plus keyboard and ARIA semantics.
+Current stable contribution points are commands, settings, and modal views. Ribbon, sidebar,
+editor-tab, and status-bar placements require explicit future manifest contracts; arbitrary DOM
+injection will not be supported.

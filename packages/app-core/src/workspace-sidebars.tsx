@@ -19,15 +19,19 @@ import {
   List,
   ListCollapse,
   ListFilter,
+  LayoutDashboard,
   Link2,
   LocateFixed,
   Network,
+  PanelLeft,
+  PanelRight,
   PlusCircle,
   MinusCircle,
   Puzzle,
   RefreshCw,
   Search,
   Settings2,
+  Sparkles,
   Tags,
   X,
 } from "lucide-react";
@@ -41,17 +45,31 @@ import type {
 import type { BookmarkItem } from "./bookmark-store";
 import { getFrontmatterProperties, splitFrontmatter } from "./frontmatter";
 import type { DemoDocument } from "./markdown-editor";
-import {
-  buildLinkIndex,
-  linkedMentionsFor,
-  type DocumentMention,
-} from "./link-index";
+import { buildLinkIndex, linkedMentionsFor, type DocumentMention } from "./link-index";
 import { VaultExplorer } from "./vault-explorer";
 import { cn } from "@flux/shared-ui";
 
 export type LeftPane = "files" | "search" | "bookmarks";
 export type RightPane =
   "backlinks" | "outgoing" | "tags" | "properties" | "outline" | "source-control";
+
+export interface PluginRibbonItem {
+  id: string;
+  label: string;
+  icon?: string;
+  active?: boolean;
+  onClick: () => void;
+}
+
+const pluginIcons = {
+  puzzle: Puzzle,
+  sparkles: Sparkles,
+  "panel-left": PanelLeft,
+  "panel-right": PanelRight,
+  "layout-dashboard": LayoutDashboard,
+  calendar: CalendarDays,
+  list: List,
+} as const;
 
 export function getLeftOptions(
   plugins?: Record<string, boolean>
@@ -1193,12 +1211,13 @@ function RightContent({
         }))
       : linkedMentionsFor(documents, activeTitle);
     const unlinkedExpanded = unlinkedPath === activePath;
-    const unlinkedMentions = unlinkedExpanded && visibleReferences
-      ? visibleReferences.unlinked.map((mention) => ({
-          ...mention,
-          target: activeTitle,
-        }))
-      : [];
+    const unlinkedMentions =
+      unlinkedExpanded && visibleReferences
+        ? visibleReferences.unlinked.map((mention) => ({
+            ...mention,
+            target: activeTitle,
+          }))
+        : [];
     const linked = groupMentions(linkedMentions);
     const unlinked = groupMentions(unlinkedMentions);
     const mentionCount = (groups: Array<[string, DocumentMention[]]>) =>
@@ -1817,6 +1836,7 @@ export function WorkspaceRibbon({
   onCanvas,
   onCalendar,
   plugins,
+  pluginItems = [],
 }: {
   onGraph?: () => void;
   onFiles?: () => void;
@@ -1824,6 +1844,7 @@ export function WorkspaceRibbon({
   onCanvas?: () => void;
   onCalendar?: () => void;
   plugins?: Record<string, boolean>;
+  pluginItems?: PluginRibbonItem[];
 }) {
   const showFiles = !plugins || plugins["file-explorer"] !== false;
   const showGraph = !plugins || plugins["graph-view"] !== false;
@@ -1861,6 +1882,17 @@ export function WorkspaceRibbon({
       <IconButton label="Plugins" onClick={onPlugins}>
         <Puzzle className="size-4" />
       </IconButton>
+      {pluginItems.length ? (
+        <div className="my-1 h-px w-5 bg-[var(--layout-separator)]" aria-hidden="true" />
+      ) : null}
+      {pluginItems.map((item) => {
+        const PluginIcon = pluginIcons[item.icon as keyof typeof pluginIcons] ?? Puzzle;
+        return (
+          <IconButton key={item.id} label={item.label} active={item.active} onClick={item.onClick}>
+            <PluginIcon className="size-4" />
+          </IconButton>
+        );
+      })}
     </nav>
   );
 }

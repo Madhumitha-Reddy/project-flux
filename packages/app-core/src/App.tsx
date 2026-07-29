@@ -95,7 +95,12 @@ import {
   type WorkspaceLeafView,
   type WorkspaceNode,
 } from "./workspace-tree";
-import { createBrowserWorkspaceTab, createGraphWorkspaceTab, createWorkspaceTab, type WorkspaceTab } from "./workspace-tabs";
+import {
+  createBrowserWorkspaceTab,
+  createGraphWorkspaceTab,
+  createWorkspaceTab,
+  type WorkspaceTab,
+} from "./workspace-tabs";
 import { BrowserView } from "./browser-view";
 import {
   browserStatePersistence,
@@ -188,7 +193,63 @@ function lifecycleFromVault(info: VaultInfo): VaultLifecycleState {
 }
 
 function sandboxedPluginDocument(html: string) {
-  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:">${html}`;
+  const policy =
+    `<meta http-equiv="Content-Security-Policy" content="` +
+    `default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; ` +
+    `img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:">`;
+  const head = /<head(?:\s[^>]*)?>/i.exec(html);
+  if (head?.index !== undefined) {
+    const insertAt = head.index + head[0].length;
+    return `${html.slice(0, insertAt)}${policy}${html.slice(insertAt)}`;
+  }
+  const root = /<html(?:\s[^>]*)?>/i.exec(html);
+  if (root?.index !== undefined) {
+    const insertAt = root.index + root[0].length;
+    return `${html.slice(0, insertAt)}<head>${policy}</head>${html.slice(insertAt)}`;
+  }
+  return `<!doctype html><html><head>${policy}</head><body>${html}</body></html>`;
+}
+
+type PluginViewLocation = "modal" | "left-sidebar" | "right-sidebar" | "workspace";
+
+interface OpenPluginView {
+  pluginId: string;
+  viewId: string;
+  title: string;
+  html: string;
+}
+
+function PluginSurface({
+  view,
+  revision,
+  onClose,
+}: {
+  view: OpenPluginView;
+  revision: number;
+  onClose: () => void;
+}) {
+  return (
+    <section className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
+      <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b px-3 [border-color:var(--layout-separator)]">
+        <h2 className="truncate text-xs font-semibold">{view.title}</h2>
+        <button
+          type="button"
+          aria-label={`Close ${view.title}`}
+          onClick={onClose}
+          className="rounded-md px-2 py-1 text-[10px] text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          Close
+        </button>
+      </header>
+      <iframe
+        key={`${view.pluginId}:${view.viewId}:${revision}`}
+        title={view.title}
+        sandbox="allow-scripts"
+        srcDoc={sandboxedPluginDocument(view.html)}
+        className="min-h-0 w-full flex-1 border-0 bg-background"
+      />
+    </section>
+  );
 }
 
 const bookmarkItemsKey = (vaultId?: string) => `flux-bookmarks-items:${vaultId ?? "default"}`;
@@ -611,7 +672,12 @@ const defaultDailyNoteConfig: DailyNoteConfig = {
 };
 
 function safeVaultPath(value: unknown, fallback: string) {
-  if (typeof value !== "string" || !value || value.startsWith("/") || value.split("/").includes("..")) {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.startsWith("/") ||
+    value.split("/").includes("..")
+  ) {
     return fallback;
   }
   return value.replace(/\/+$/, "");
@@ -619,7 +685,8 @@ function safeVaultPath(value: unknown, fallback: string) {
 
 async function loadDailyNoteConfig(client: FluxClient, vaultId: string) {
   const value = await client.getVaultConfig(vaultId);
-  const timeZone = typeof value.timeZone === "string" ? value.timeZone : defaultDailyNoteConfig.timeZone;
+  const timeZone =
+    typeof value.timeZone === "string" ? value.timeZone : defaultDailyNoteConfig.timeZone;
   new Intl.DateTimeFormat(undefined, { timeZone }).format();
   return {
     dailyFolder: safeVaultPath(value.dailyFolder, defaultDailyNoteConfig.dailyFolder),
@@ -634,9 +701,7 @@ async function loadDailyNoteConfig(client: FluxClient, vaultId: string) {
         ? value.weeklyFormat
         : defaultDailyNoteConfig.weeklyFormat,
     dailyTemplate:
-      typeof value.dailyTemplate === "string"
-        ? safeVaultPath(value.dailyTemplate, "")
-        : undefined,
+      typeof value.dailyTemplate === "string" ? safeVaultPath(value.dailyTemplate, "") : undefined,
     weeklyTemplate:
       typeof value.weeklyTemplate === "string"
         ? safeVaultPath(value.weeklyTemplate, "")
@@ -794,13 +859,9 @@ function QuickCapture({ runtime }: { runtime: FluxRuntime }) {
       const addition = `\n\n${content.trim()}\n`;
       const initial =
         target === "daily"
-          ? await noteTemplate(
-              runtime.client,
-              vault.id,
-              config.dailyTemplate,
-              `# ${date}\n`,
-              { date }
-            )
+          ? await noteTemplate(runtime.client, vault.id, config.dailyTemplate, `# ${date}\n`, {
+              date,
+            })
           : "";
       let saved = false;
       for (let attempt = 0; attempt < 3 && !saved; attempt += 1) {
@@ -854,7 +915,9 @@ function QuickCapture({ runtime }: { runtime: FluxRuntime }) {
         >
           <option value="">Choose a vault…</option>
           {vaults.map((item) => (
-            <option key={item.vaultId} value={item.vaultId}>{item.displayName}</option>
+            <option key={item.vaultId} value={item.vaultId}>
+              {item.displayName}
+            </option>
           ))}
         </select>
         <select
@@ -963,7 +1026,8 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const [vaultPlugins, setVaultPlugins] = useState<VaultPlugin[]>([]);
   const [pluginBusy, setPluginBusy] = useState(false);
   const [pluginRuntimeRevision, setPluginRuntimeRevision] = useState(0);
-  const [pluginView, setPluginView] = useState<{ title: string; html: string }>();
+  const pluginChecksumRef = useRef("");
+  const [pluginView, setPluginView] = useState<OpenPluginView>();
   const [pluginQuery, setPluginQuery] = useState("");
   const [recentVaults, setRecentVaults] = useState<RecentVault[]>([]);
   const [availableVaults, setAvailableVaults] = useState<VaultLocation[]>([]);
@@ -1106,7 +1170,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const graphVisible = workspaceLeaves(workspaceRoot).some((leaf) => leaf.view === "graph");
   const visibleActiveTab = (() => {
     if (activeLeaf?.view !== "editor") return undefined;
-    const leafTabs = activeLeaf.tabIds.map((id) => tabs.find((t) => t.id === id)).filter((t) => t !== undefined);
+    const leafTabs = activeLeaf.tabIds
+      .map((id) => tabs.find((t) => t.id === id))
+      .filter((t) => t !== undefined);
     return leafTabs.find((tab) => tab.id === activeLeaf.activeTabId) ?? leafTabs[0];
   })();
 
@@ -1224,8 +1290,8 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       const request = runtime.client
         .getDocumentReferences(vault.id, path, includeUnlinked)
         .catch((error) => {
-        referenceRequestsRef.current.delete(key);
-        throw error;
+          referenceRequestsRef.current.delete(key);
+          throw error;
         });
       referenceRequestsRef.current.set(key, request);
       return request;
@@ -1255,7 +1321,14 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     } else {
       setStoredBookmarkGroups(bookmarkVaultId, loadBookmarkGroups(vault?.id));
     }
-  }, [appSettings, bookmarkVaultId, runtime.statePersistence, setStoredBookmarkGroups, setStoredBookmarks, vault?.id]);
+  }, [
+    appSettings,
+    bookmarkVaultId,
+    runtime.statePersistence,
+    setStoredBookmarkGroups,
+    setStoredBookmarks,
+    vault?.id,
+  ]);
 
   const updateBookmarks = (updater: (current: BookmarkItem[]) => BookmarkItem[]) => {
     const current = useAppStore.getState().bookmarksByVault[bookmarkVaultId] ?? EMPTY_BOOKMARKS;
@@ -1476,7 +1549,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     setWorkspaceRoot(nextRoot);
     if (activeLeafId === leafId) {
       setActiveTabId(nextLeaf.activeTabId);
-      revealSidebarPath(nextActiveTab?.document?.path ?? nextActiveTab?.pdf?.path ?? nextActiveTab?.preview?.path);
+      revealSidebarPath(
+        nextActiveTab?.document?.path ?? nextActiveTab?.pdf?.path ?? nextActiveTab?.preview?.path
+      );
     }
   };
 
@@ -1494,7 +1569,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       setActiveLeafId(nextLeaf.id);
       setActiveTabId(nextLeaf.activeTabId);
       const nextActiveTab = tabs.find((candidate) => candidate.id === nextLeaf.activeTabId);
-      revealSidebarPath(nextActiveTab?.document?.path ?? nextActiveTab?.pdf?.path ?? nextActiveTab?.preview?.path);
+      revealSidebarPath(
+        nextActiveTab?.document?.path ?? nextActiveTab?.pdf?.path ?? nextActiveTab?.preview?.path
+      );
       return;
     }
     const replacement = createWorkspaceTab(nextTabIdRef.current++);
@@ -1574,7 +1651,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
         setTabs((current) => current.filter((candidate) => candidate.id !== tabId));
       }
       const activeTab = tabs.find((candidate) => candidate.id === nextLeaf.activeTabId);
-      revealSidebarPath(activeTab?.document?.path ?? activeTab?.pdf?.path ?? activeTab?.preview?.path);
+      revealSidebarPath(
+        activeTab?.document?.path ?? activeTab?.pdf?.path ?? activeTab?.preview?.path
+      );
       return;
     }
 
@@ -1598,7 +1677,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     if (!workspaceHasTab(nextRoot, tabId)) {
       setTabs((current) => current.filter((candidate) => candidate.id !== tabId));
     }
-    revealSidebarPath(nextActiveTab?.document?.path ?? nextActiveTab?.pdf?.path ?? nextActiveTab?.preview?.path);
+    revealSidebarPath(
+      nextActiveTab?.document?.path ?? nextActiveTab?.pdf?.path ?? nextActiveTab?.preview?.path
+    );
   };
 
   const replaceWorkspaceDocument = (document: DemoDocument | null) => {
@@ -1685,6 +1766,27 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     }
   };
 
+  const pluginVaultId = vault?.id;
+  useEffect(() => {
+    if (!runtime.client) return;
+    let active = true;
+    const loadPluginContributions = async () => {
+      const [catalog, enabled] = await Promise.all([
+        runtime.client!.listPlugins(),
+        pluginVaultId
+          ? runtime.client!.listVaultPlugins(pluginVaultId)
+          : Promise.resolve([]),
+      ]);
+      if (!active) return;
+      setPluginCatalog(catalog);
+      setVaultPlugins(enabled);
+    };
+    void loadPluginContributions().catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [pluginVaultId, runtime.client]);
+
   const openPluginManager = () => {
     setPluginManagerOpen(true);
     void refreshPlugins().catch((error) =>
@@ -1693,6 +1795,138 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       })
     );
   };
+
+  const openPluginId = pluginView?.pluginId;
+  const openPluginViewId = pluginView?.viewId;
+  const openPluginIsDevelopment = pluginCatalog.some(
+    (entry) =>
+      entry.active &&
+      entry.manifest.id === openPluginId &&
+      entry.plugin.development
+  );
+  const shouldPollDevelopmentPlugins = openPluginIsDevelopment;
+  useEffect(() => {
+    if (!shouldPollDevelopmentPlugins || !runtime.client) return;
+    let active = true;
+    const refreshDevelopmentBuilds = async () => {
+      const catalog = await runtime.client!.listPlugins();
+      if (!active) return;
+      const checksum = catalog
+        .filter(
+          (entry) =>
+            entry.plugin.development &&
+            (entry.active || entry.plugin.status === "staged")
+        )
+        .map((entry) => `${entry.manifest.id}:${entry.plugin.checksum}`)
+        .sort()
+        .join("|");
+      if (pluginChecksumRef.current && pluginChecksumRef.current !== checksum) {
+        setPluginRuntimeRevision((current) => current + 1);
+        const openPluginStillInDevelopment = catalog.some(
+          (entry) =>
+            entry.active &&
+            entry.manifest.id === openPluginId &&
+            entry.plugin.development
+        );
+        if (
+          openPluginStillInDevelopment &&
+          vault &&
+          openPluginId &&
+          openPluginViewId
+        ) {
+          const next = await runtime.client!.getPluginView(
+            vault.id,
+            openPluginId,
+            openPluginViewId
+          );
+          if (!active) return;
+          setPluginView((current) =>
+            current &&
+            current.pluginId === openPluginId &&
+            current.viewId === openPluginViewId
+              ? { ...current, ...next }
+              : current
+          );
+        }
+      }
+      pluginChecksumRef.current = checksum;
+      setPluginCatalog(catalog);
+    };
+    void refreshDevelopmentBuilds().catch(() => undefined);
+    const timer = window.setInterval(
+      () => void refreshDevelopmentBuilds().catch(() => undefined),
+      1_000
+    );
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [
+    openPluginId,
+    openPluginViewId,
+    runtime.client,
+    shouldPollDevelopmentPlugins,
+    vault,
+  ]);
+
+  const openPluginSurface = useCallback(
+    async (
+      pluginId: string,
+      view: {
+        id: string;
+        title: string;
+        location?: PluginViewLocation;
+      }
+    ) => {
+      if (!runtime.client || !vault) return;
+      try {
+        const result = await runtime.client.getPluginView(vault.id, pluginId, view.id);
+        setPluginView({
+          ...result,
+          pluginId,
+          viewId: view.id,
+        });
+        setPluginManagerOpen(false);
+      } catch (error) {
+        toast.error(`${view.title} failed`, {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    [runtime.client, vault]
+  );
+
+  const pluginRibbonItems = useMemo(
+    () =>
+      pluginCatalog.flatMap((entry) => {
+        const vaultState = vaultPlugins.find(
+          (candidate) => candidate.pluginId === entry.manifest.id
+        );
+        if (!entry.active || !vaultState?.enabled) return [];
+        return (entry.manifest.contributes?.views ?? []).map((view) => {
+          const active =
+            pluginView?.pluginId === entry.manifest.id && pluginView.viewId === view.id;
+          return {
+            id: `${entry.manifest.id}:${view.id}`,
+            label: view.title,
+            icon: view.icon,
+            active,
+            onClick: () =>
+              active ? setPluginView(undefined) : void openPluginSurface(entry.manifest.id, view),
+          };
+        });
+      }),
+    [openPluginSurface, pluginCatalog, pluginView, vaultPlugins]
+  );
+  const pluginViewLocation = useMemo<PluginViewLocation>(() => {
+    if (!pluginView) return "modal";
+    return (
+      pluginCatalog
+        .find((entry) => entry.manifest.id === pluginView.pluginId)
+        ?.manifest.contributes?.views?.find((view) => view.id === pluginView.viewId)
+        ?.location ?? "modal"
+    );
+  }, [pluginCatalog, pluginView]);
 
   const installPlugin = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -1704,10 +1938,16 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
       const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
       const sha256 = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
       const installed = await runtime.client.installPlugin(bytes, sha256);
-      toast.success(`${installed.manifest.name} staged`, {
-        description: "Review permissions, then activate it.",
+      const reloaded = installed.plugin.status === "active";
+      toast.success(`${installed.manifest.name} ${reloaded ? "reloaded" : "staged"}`, {
+        description: reloaded
+          ? installed.plugin.development
+            ? "Development build is live."
+            : "Installed build is live."
+          : "Review permissions, then activate it.",
       });
       await refreshPlugins();
+      if (reloaded) setPluginRuntimeRevision((current) => current + 1);
     } catch (error) {
       toast.error("Plugin install failed", {
         description: error instanceof Error ? error.message : String(error),
@@ -2963,19 +3203,22 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     }, 1800);
   };
 
-  const openBrowserTab = useCallback((url: string) => {
-    const id = nextTabIdRef.current++;
-    setTabs((current) => [...current, createBrowserWorkspaceTab(id, url)]);
-    setActiveTabId(id);
-    setWorkspaceRoot((root) =>
-      mapWorkspaceLeaf(root, activeLeafId, (leaf) => ({
-        ...leaf,
-        view: "browser",
-        tabIds: [...leaf.tabIds, id],
-        activeTabId: id,
-      }))
-    );
-  }, [activeLeafId]);
+  const openBrowserTab = useCallback(
+    (url: string) => {
+      const id = nextTabIdRef.current++;
+      setTabs((current) => [...current, createBrowserWorkspaceTab(id, url)]);
+      setActiveTabId(id);
+      setWorkspaceRoot((root) =>
+        mapWorkspaceLeaf(root, activeLeafId, (leaf) => ({
+          ...leaf,
+          view: "browser",
+          tabIds: [...leaf.tabIds, id],
+          activeTabId: id,
+        }))
+      );
+    },
+    [activeLeafId]
+  );
 
   useEffect(() => {
     const handleGlobalClick = (event: MouseEvent) => {
@@ -3210,11 +3453,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     setActiveTabId(parsed.tabId);
   };
 
-  const moveTabBefore = (
-    event: DragEvent,
-    targetLeafId: number,
-    targetTabId: number
-  ) => {
+  const moveTabBefore = (event: DragEvent, targetLeafId: number, targetTabId: number) => {
     event.preventDefault();
     event.stopPropagation();
     const payload = event.dataTransfer.getData("application/x-flux-tab");
@@ -3304,8 +3543,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
         kind: "split",
         id: splitId,
         direction: zone === "left" || zone === "right" ? "horizontal" : "vertical",
-        children:
-          zone === "left" || zone === "top" ? [newLeaf, current] : [current, newLeaf],
+        children: zone === "left" || zone === "top" ? [newLeaf, current] : [current, newLeaf],
       }))
     );
     setActiveLeafId(newLeafId);
@@ -4148,9 +4386,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                                 if (wasDroppedAtWindowEdge(event)) popOutTab(tab);
                               }}
                               onDragOver={(event) => {
-                                if (
-                                  event.dataTransfer.types.includes("application/x-flux-tab")
-                                )
+                                if (event.dataTransfer.types.includes("application/x-flux-tab"))
                                   event.preventDefault();
                               }}
                               onDrop={(event) => moveTabBefore(event, leaf.id, tab.id)}
@@ -4300,89 +4536,114 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                 }}
                 onCalendar={() => setCalendarOpen(true)}
                 plugins={plugins}
+                pluginItems={pluginRibbonItems}
               />
             }
             leftSidebar={
-              <WorkspaceLeftSidebar
-                activeTitle={visibleActiveTab?.title ?? ""}
-                activePath={activeFilePath}
-                revealPath={sidebarRevealPath}
-                onClearRevealPath={() => setSidebarRevealPath(undefined)}
-                pane={effectiveLeftSidebarPane}
-                documents={documents}
-                onOpenDocument={(path) => void openDocument(path)}
-                onOpenPdf={() => setLeafView(activeLeafId, "pdf")}
-                onCreateNote={(parent, name) => void createNote(parent, name)}
-                vaultEntries={vault ? fileEntries : undefined}
-                onCreateFolder={(parent, name) => void createFolder(parent, name)}
-                onMovePath={(source, destination) => {
-                  if (
-                    window.confirm(
-                      `Move "${source}" to "${destination}"?\n\nLinks and backlinks will be updated.`
+              pluginView && pluginViewLocation === "left-sidebar" ? (
+                <PluginSurface
+                  view={pluginView}
+                  revision={pluginRuntimeRevision}
+                  onClose={() => setPluginView(undefined)}
+                />
+              ) : (
+                <WorkspaceLeftSidebar
+                  activeTitle={visibleActiveTab?.title ?? ""}
+                  activePath={activeFilePath}
+                  revealPath={sidebarRevealPath}
+                  onClearRevealPath={() => setSidebarRevealPath(undefined)}
+                  pane={effectiveLeftSidebarPane}
+                  documents={documents}
+                  onOpenDocument={(path) => void openDocument(path)}
+                  onOpenPdf={() => setLeafView(activeLeafId, "pdf")}
+                  onCreateNote={(parent, name) => void createNote(parent, name)}
+                  vaultEntries={vault ? fileEntries : undefined}
+                  onCreateFolder={(parent, name) => void createFolder(parent, name)}
+                  onMovePath={(source, destination) => {
+                    if (
+                      window.confirm(
+                        `Move "${source}" to "${destination}"?\n\nLinks and backlinks will be updated.`
+                      )
                     )
-                  )
-                    void movePath(source, destination);
-                }}
-                onRenamePath={renamePath}
-                onDeletePath={(path) => void deletePath(path)}
-                onArchivePath={(path) => void archivePath(path)}
-                onOpenTrash={() => void openTrash()}
-                onPreviewPath={async (path) => {
-                  if (!runtime.client || !vault) return null;
-                  return (await runtime.client.readFile(vault.id, path)).content;
-                }}
-                bookmarks={bookmarks}
-                bookmarkGroups={bookmarkGroups}
-                onRemoveBookmark={handleRemoveBookmark}
-                onOpenAddBookmark={() => handleOpenAddBookmark()}
-                onCreateBookmarkGroup={handleCreateBookmarkGroup}
-                expandedFolders={expandedFolders}
-                onExpandedFoldersChange={setExpandedFolders}
-                onExpandFolder={(path) => void loadFolderChildren(path)}
-                searchVault={searchVaultIndex}
-                searchQuery={sidebarSearchQuery}
-                onSearchQueryChange={setSidebarSearchQuery}
-                selectedPath={sidebarSelectedPath}
-                onSelectPath={setSidebarSelectedPath}
-              />
+                      void movePath(source, destination);
+                  }}
+                  onRenamePath={renamePath}
+                  onDeletePath={(path) => void deletePath(path)}
+                  onArchivePath={(path) => void archivePath(path)}
+                  onOpenTrash={() => void openTrash()}
+                  onPreviewPath={async (path) => {
+                    if (!runtime.client || !vault) return null;
+                    return (await runtime.client.readFile(vault.id, path)).content;
+                  }}
+                  bookmarks={bookmarks}
+                  bookmarkGroups={bookmarkGroups}
+                  onRemoveBookmark={handleRemoveBookmark}
+                  onOpenAddBookmark={() => handleOpenAddBookmark()}
+                  onCreateBookmarkGroup={handleCreateBookmarkGroup}
+                  expandedFolders={expandedFolders}
+                  onExpandedFoldersChange={setExpandedFolders}
+                  onExpandFolder={(path) => void loadFolderChildren(path)}
+                  searchVault={searchVaultIndex}
+                  searchQuery={sidebarSearchQuery}
+                  onSearchQueryChange={setSidebarSearchQuery}
+                  selectedPath={sidebarSelectedPath}
+                  onSelectPath={setSidebarSelectedPath}
+                />
+              )
             }
             main={
-              <div className="relative h-full min-h-0 min-w-0">
-                {lifecycle === "degraded" ? (
-                  <DegradedBanner onRebuild={() => void rebuildIndex()} />
-                ) : null}
-                <WorkspaceTree node={workspaceRoot} renderLeaf={renderWorkspaceLeaf} />
-              </div>
+              pluginView && pluginViewLocation === "workspace" ? (
+                <PluginSurface
+                  view={pluginView}
+                  revision={pluginRuntimeRevision}
+                  onClose={() => setPluginView(undefined)}
+                />
+              ) : (
+                <div className="relative h-full min-h-0 min-w-0">
+                  {lifecycle === "degraded" ? (
+                    <DegradedBanner onRebuild={() => void rebuildIndex()} />
+                  ) : null}
+                  <WorkspaceTree node={workspaceRoot} renderLeaf={renderWorkspaceLeaf} />
+                </div>
+              )
             }
             rightSidebar={
-              <WorkspaceRightSidebar
-                pane={rightSidebarPane}
-                activeDocument={visibleActiveTab?.document ?? null}
-                documents={documents}
-                onOpenDocument={openDocument}
-                loadReferences={loadDocumentReferences}
-                loadFacets={loadVaultFacets}
-                onSearchTag={(tag) => {
-                  setSidebarSearchQuery(`tag:${tag}`);
-                  setLeftSidebarPane("search");
-                }}
-                onNavigateHeading={(heading, line) => {
-                  const path = visibleActiveTab?.document?.path;
-                  if (!path) return;
-                  setHeadingReveal({ path, heading, line, request: Date.now() });
-                }}
-                onOpenReference={(path, line) => {
-                  void openDocument(path).then(() =>
-                    setHeadingReveal({
-                      path,
-                      heading: "",
-                      line,
-                      request: Date.now(),
-                      absolute: true,
-                    })
-                  );
-                }}
-              />
+              pluginView && pluginViewLocation === "right-sidebar" ? (
+                <PluginSurface
+                  view={pluginView}
+                  revision={pluginRuntimeRevision}
+                  onClose={() => setPluginView(undefined)}
+                />
+              ) : (
+                <WorkspaceRightSidebar
+                  pane={rightSidebarPane}
+                  activeDocument={visibleActiveTab?.document ?? null}
+                  documents={documents}
+                  onOpenDocument={openDocument}
+                  loadReferences={loadDocumentReferences}
+                  loadFacets={loadVaultFacets}
+                  onSearchTag={(tag) => {
+                    setSidebarSearchQuery(`tag:${tag}`);
+                    setLeftSidebarPane("search");
+                  }}
+                  onNavigateHeading={(heading, line) => {
+                    const path = visibleActiveTab?.document?.path;
+                    if (!path) return;
+                    setHeadingReveal({ path, heading, line, request: Date.now() });
+                  }}
+                  onOpenReference={(path, line) => {
+                    void openDocument(path).then(() =>
+                      setHeadingReveal({
+                        path,
+                        heading: "",
+                        line,
+                        request: Date.now(),
+                        absolute: true,
+                      })
+                    );
+                  }}
+                />
+              )
             }
             footer={
               <FluxStatusBar
@@ -4437,7 +4698,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
           {lifecycle === "initializing" || (vault && sessionVaultId !== vault.id) ? (
             <InitializationOverlay phase={initializationPhase} label={status} />
           ) : null}
-          {pluginView ? (
+          {pluginView && pluginViewLocation === "modal" ? (
             <div className="fixed inset-0 z-[210] grid place-items-center bg-black/55 p-4 backdrop-blur-sm">
               <section className="flex h-[min(44rem,90vh)] w-full max-w-5xl flex-col overflow-hidden rounded-xl border bg-background shadow-2xl [border-color:var(--layout-separator)]">
                 <header className="flex h-12 shrink-0 items-center justify-between border-b px-4 [border-color:var(--layout-separator)]">
@@ -4451,6 +4712,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                   </button>
                 </header>
                 <iframe
+                  key={`${pluginView.pluginId}:${pluginView.viewId}:${pluginRuntimeRevision}`}
                   title={pluginView.title}
                   sandbox="allow-scripts"
                   srcDoc={sandboxedPluginDocument(pluginView.html)}
@@ -4674,7 +4936,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                                                 ?.emit(entry.manifest.id, `command:${command.id}`, {
                                                   commandId: command.id,
                                                 })
-                                                .then(() => toast.success(`${command.title} finished`))
+                                                .then(() =>
+                                                  toast.success(`${command.title} finished`)
+                                                )
                                                 .catch((error) =>
                                                   toast.error(`${command.title} failed`, {
                                                     description:
@@ -4695,21 +4959,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                                           key={view.id}
                                           type="button"
                                           onClick={() =>
-                                            void runtime
-                                              .client!.getPluginView(
-                                                vault!.id,
-                                                entry.manifest.id,
-                                                view.id
-                                              )
-                                              .then(setPluginView)
-                                              .catch((error) =>
-                                                toast.error(`${view.title} failed`, {
-                                                  description:
-                                                    error instanceof Error
-                                                      ? error.message
-                                                      : String(error),
-                                                })
-                                              )
+                                            void openPluginSurface(entry.manifest.id, view)
                                           }
                                           className="rounded-md border px-2 py-1 text-[10px] [border-color:var(--layout-separator)]"
                                         >
@@ -4848,23 +5098,27 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                                       Roll back
                                     </button>
                                   ) : null}
-                                  {!entry.active ? (
-                                    <button
-                                      type="button"
-                                      disabled={pluginBusy}
-                                      onClick={() =>
-                                        void updatePlugin(() =>
-                                          runtime.client!.uninstallPlugin(
-                                            entry.manifest.id,
-                                            entry.manifest.version
-                                          )
+                                  <button
+                                    type="button"
+                                    disabled={pluginBusy}
+                                    onClick={() => {
+                                      if (
+                                        !window.confirm(
+                                          `Remove ${entry.manifest.name}? Plugin files will be removed; vault settings stay recoverable.`
                                         )
-                                      }
-                                      className="rounded-md px-2.5 py-1.5 text-xs text-destructive hover:bg-destructive/10"
-                                    >
-                                      Uninstall
-                                    </button>
-                                  ) : null}
+                                      )
+                                        return;
+                                      void updatePlugin(() =>
+                                        runtime.client!.uninstallPlugin(
+                                          entry.manifest.id,
+                                          entry.manifest.version
+                                        )
+                                      );
+                                    }}
+                                    className="rounded-md px-2.5 py-1.5 text-xs text-destructive hover:bg-destructive/10"
+                                  >
+                                    Remove
+                                  </button>
                                 </div>
                               </div>
                             </article>
@@ -5283,15 +5537,16 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                 </div>
                 <div className="mt-4 grid grid-cols-7 text-center text-[10px] font-medium text-muted-foreground">
                   {["S", "M", "T", "W", "T", "F", "S"].map((day, index) => (
-                    <span key={`${day}-${index}`} className="py-1">{day}</span>
+                    <span key={`${day}-${index}`} className="py-1">
+                      {day}
+                    </span>
                   ))}
                 </div>
                 <div className="grid grid-cols-7 gap-0.5">
                   {calendarDays.map((day) => {
                     const key = localDateKey(day);
                     const selected = key === calendarDate;
-                    const currentMonth =
-                      day.getMonth() === dateFromKey(calendarDate).getMonth();
+                    const currentMonth = day.getMonth() === dateFromKey(calendarDate).getMonth();
                     const exists = fileEntries.some(
                       (entry) =>
                         entry.path ===

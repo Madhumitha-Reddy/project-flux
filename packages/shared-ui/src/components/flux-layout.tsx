@@ -296,6 +296,7 @@ export function FluxLayout({
     <div
       className={cn(
         "flux-layout-root group/layout relative grid h-svh min-h-0 w-full grid-rows-[44px_minmax(0,1fr)_28px] overflow-hidden bg-background text-foreground",
+        resizingSide && "cursor-col-resize select-none [&_iframe]:pointer-events-none",
         className
       )}
       data-window-active={windowActive}

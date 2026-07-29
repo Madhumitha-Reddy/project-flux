@@ -208,7 +208,21 @@ export interface PluginManifest {
   activationEvents?: string[];
   contributes?: {
     commands?: Array<{ id: string; title: string }>;
-    views?: Array<{ id: string; title: string; entry: string }>;
+    views?: Array<{
+      id: string;
+      title: string;
+      entry: string;
+      /** Defaults to modal when omitted. */
+      location?: "modal" | "left-sidebar" | "right-sidebar" | "workspace";
+      icon?:
+        | "puzzle"
+        | "sparkles"
+        | "panel-left"
+        | "panel-right"
+        | "layout-dashboard"
+        | "calendar"
+        | "list";
+    }>;
     settings?: Array<{
       id: string;
       title: string;
@@ -224,6 +238,7 @@ export interface InstalledPlugin {
   version: string;
   checksum: string;
   installPath: string;
+  development: boolean;
   status: "staged" | "active" | "previous" | "failed" | "removing";
   installedAt: string;
   activatedAt?: string;

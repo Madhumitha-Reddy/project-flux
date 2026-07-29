@@ -24,10 +24,35 @@ export interface PluginCommandContribution {
   title: string;
 }
 
+export const pluginViewLocations = [
+  "modal",
+  "left-sidebar",
+  "right-sidebar",
+  "workspace",
+] as const;
+
+export type PluginViewLocation = (typeof pluginViewLocations)[number];
+
+export const pluginViewIcons = [
+  "puzzle",
+  "sparkles",
+  "panel-left",
+  "panel-right",
+  "layout-dashboard",
+  "calendar",
+  "list",
+] as const;
+
+export type PluginViewIcon = (typeof pluginViewIcons)[number];
+
 export interface PluginViewContribution {
   id: string;
   title: string;
   entry: string;
+  /** Host surface. Omitted manifests open in a modal for backward compatibility. */
+  location?: PluginViewLocation;
+  /** Safe host-rendered icon name. Arbitrary SVG/HTML is not accepted. */
+  icon?: PluginViewIcon;
 }
 
 export type PluginSettingContribution =

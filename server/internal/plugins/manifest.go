@@ -25,6 +25,15 @@ var supportedCapabilities = map[string]bool{
 	"git.status": true, "git.commit": true,
 }
 
+var supportedViewLocations = map[string]bool{
+	"": true, "modal": true, "left-sidebar": true, "right-sidebar": true, "workspace": true,
+}
+
+var supportedViewIcons = map[string]bool{
+	"": true, "puzzle": true, "sparkles": true, "panel-left": true, "panel-right": true,
+	"layout-dashboard": true, "calendar": true, "list": true,
+}
+
 type Manifest struct {
 	SchemaVersion       int           `json:"schemaVersion"`
 	ID                  string        `json:"id"`
@@ -52,9 +61,18 @@ type CommandContribution struct {
 }
 
 type ViewContribution struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	Entry string `json:"entry"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Entry    string `json:"entry"`
+	Location string `json:"location,omitempty"`
+	Icon     string `json:"icon,omitempty"`
+}
+
+func (v ViewContribution) EffectiveLocation() string {
+	if v.Location == "" {
+		return "left-sidebar"
+	}
+	return v.Location
 }
 
 type SettingContribution struct {
@@ -132,6 +150,12 @@ func (m Manifest) validateContributions() error {
 		}
 		if view.Entry == "" || strings.Contains(view.Entry, `\`) || path.IsAbs(view.Entry) || path.Clean(view.Entry) != view.Entry || strings.HasPrefix(view.Entry, "../") || strings.ToLower(path.Ext(view.Entry)) != ".html" {
 			return fmt.Errorf("view %q entry must be a clean relative .html path", view.ID)
+		}
+		if !supportedViewLocations[view.Location] {
+			return fmt.Errorf("view %q has unsupported location %q", view.ID, view.Location)
+		}
+		if !supportedViewIcons[view.Icon] {
+			return fmt.Errorf("view %q has unsupported icon %q", view.ID, view.Icon)
 		}
 	}
 	for _, setting := range m.Contributions.Settings {

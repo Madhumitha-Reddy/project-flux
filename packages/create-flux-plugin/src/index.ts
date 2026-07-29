@@ -96,6 +96,30 @@ function validateContributions(manifest: JsonObject, pluginId: string): void {
     ) {
       throw new Error(`${label}.entry must be a clean relative .html path`);
     }
+    if (
+      view.location !== undefined &&
+      !new Set(["modal", "left-sidebar", "right-sidebar", "workspace"]).has(
+        String(view.location)
+      )
+    ) {
+      throw new Error(
+        `${label}.location must be modal, left-sidebar, right-sidebar, or workspace`
+      );
+    }
+    if (
+      view.icon !== undefined &&
+      !new Set([
+        "puzzle",
+        "sparkles",
+        "panel-left",
+        "panel-right",
+        "layout-dashboard",
+        "calendar",
+        "list",
+      ]).has(String(view.icon))
+    ) {
+      throw new Error(`${label}.icon is not a supported built-in icon`);
+    }
   }
   for (const [index, setting] of contributionList(
     contributes.settings ?? [],
@@ -202,7 +226,9 @@ export function createPlugin(directory: string): string {
         private: true,
         type: "module",
         scripts: {
-          build: "bun build src/main.ts --target browser --format iife --outfile dist/main.js",
+          build:
+            "bun build src/main.ts --target browser --format iife --outfile dist/main.js && node -e \"require('node:fs').copyFileSync('src/view.html', 'dist/view.html')\"",
+          dev: "flux-plugin dev",
           validate: "flux-plugin validate",
           pack: "bun run build && flux-plugin pack",
         },
@@ -225,10 +251,19 @@ export function createPlugin(directory: string): string {
         description: "A Flux plugin",
         entry: "dist/main.js",
         activationEvents: [`onCommand:${id}.search-welcome`],
-        requiredPermissions: ["vault.search"],
+        requiredPermissions: ["vault.search", "ui.view"],
         optionalPermissions: [],
         contributes: {
           commands: [{ id: `${id}.search-welcome`, title: "Search welcome notes" }],
+          views: [
+            {
+              id: `${id}.welcome`,
+              title: "Welcome",
+              entry: "dist/view.html",
+              location: "right-sidebar",
+              icon: "sparkles",
+            },
+          ],
         },
       },
       null,
@@ -258,8 +293,38 @@ export function createPlugin(directory: string): string {
     `import { definePlugin } from "@flux/plugin-sdk";\n\nlet stop: (() => void) | undefined;\n\nexport default definePlugin({\n  activate(context) {\n    stop = context.on("command:${id}.search-welcome", async () => {\n      await context.capabilities.invoke("vault.search", {\n        query: "#welcome",\n        limit: 5,\n      });\n    });\n  },\n  deactivate() {\n    stop?.();\n  },\n});\n`
   );
   writeFileSync(
+    join(root, "src/view.html"),
+    `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root { color-scheme: light dark; font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 24px; color: CanvasText; background: Canvas; }
+      .card { max-width: 560px; padding: 20px; border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); border-radius: 12px; }
+      .label { margin: 0 0 6px; font: 600 10px/1.2 ui-monospace, monospace; letter-spacing: .14em; text-transform: uppercase; opacity: .58; }
+      h1 { margin: 0; font-size: 20px; letter-spacing: -.02em; }
+      p { margin: 8px 0 18px; opacity: .72; }
+      button { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 7px; padding: 8px 12px; color: Canvas; background: CanvasText; font: inherit; font-weight: 600; }
+      button:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <p class="label">Flux plugin</p>
+      <h1>Welcome view</h1>
+      <p>Edit <code>src/view.html</code>. Dev mode reloads this open view.</p>
+      <button type="button">Plugin action</button>
+    </main>
+  </body>
+</html>
+`
+  );
+  writeFileSync(
     join(root, "README.md"),
-    `# ${basename(root)}\n\n\`bun install\` installs dependencies. \`bun run validate\` checks manifest permissions. \`bun run pack\` builds a checksumed \`.flux-plugin\` package.\n`
+    `# ${basename(root)}\n\n- \`bun install\` installs dependencies.\n- \`bun run dev\` watches, rebuilds, and reloads this plugin in the running Flux desktop app.\n- \`bun run validate\` checks manifest permissions.\n- \`bun run pack\` creates the production \`.flux-plugin\` package.\n\nPlugin views run in sandboxed iframes. Bundle React/shadcn into the view when needed; inherit Flux light/dark colors instead of importing app internals.\n`
   );
   writeFileSync(join(root, ".gitignore"), "dist/\n*.flux-plugin\nnode_modules/\n");
   return root;
@@ -346,7 +411,7 @@ export function packPlugin(directory: string, output?: string): string {
   const target = resolve(
     output ?? join(root, `${String(manifest.id)}-${String(manifest.version)}.flux-plugin`)
   );
-  writeFileSync(target, zip(files), { flag: "wx" });
+  writeFileSync(target, zip(files));
   return target;
 }
 
