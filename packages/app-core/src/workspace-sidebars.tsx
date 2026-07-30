@@ -153,7 +153,10 @@ function PaneTabs<T extends string>({
   onChange: (id: T) => void;
 }) {
   return (
-    <nav aria-label="Sidebar views" className="flex h-8 items-center gap-1 overflow-hidden">
+    <nav
+      aria-label="Sidebar views"
+      className="flex h-8 items-center gap-1 overflow-hidden px-2"
+    >
       {options.map(({ id, label, icon: Icon }) => (
         <IconButton key={id} label={label} active={active === id} onClick={() => onChange(id)}>
           <Icon className="size-4" strokeWidth={1.8} />
@@ -166,7 +169,7 @@ function PaneTabs<T extends string>({
 function SidebarToolbar({ children, wrap = false }: { children: ReactNode; wrap?: boolean }) {
   return (
     <div
-      className={`sticky top-0 z-30 flex min-h-9 shrink-0 items-center justify-center gap-0.5 bg-sidebar px-2 ${wrap ? "flex-wrap py-1" : ""}`}
+      className={`sticky top-0 z-30 flex min-h-9 shrink-0 items-center justify-start gap-0.5 bg-sidebar px-2 ${wrap ? "flex-wrap py-1" : ""}`}
     >
       {children}
     </div>

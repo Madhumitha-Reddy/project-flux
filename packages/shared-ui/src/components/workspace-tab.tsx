@@ -242,11 +242,11 @@ export function FluxEditorPane({
   return (
     <section
       className={cn(
-        "flux-editor-pane flex h-full min-h-0 min-w-0 flex-col bg-background",
+        "flux-editor-pane flex h-full min-h-0 min-w-0 flex-col bg-sidebar",
         className
       )}
     >
-      <header className="flux-editor-pane-header relative flex h-9 shrink-0 items-center px-2 text-muted-foreground">
+      <header className="flux-editor-pane-header relative flex h-9 shrink-0 items-center border-b px-2 text-muted-foreground [border-color:var(--layout-separator)]">
         <div className="flex items-center gap-0.5">
           <button
             type="button"

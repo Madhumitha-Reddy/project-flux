@@ -22,6 +22,7 @@ import {
   FluxStackedTab,
 } from "@flux/shared-ui/components/flux-tabs";
 import { ModeToggle } from "@flux/shared-ui/components/mode-toggle";
+import { Button } from "@flux/shared-ui/components/ui/button";
 import { FluxStatusBar } from "@flux/shared-ui/components/status-bar";
 import { ThemeProvider, type Theme } from "@flux/shared-ui/components/theme-provider";
 import { TooltipProvider } from "@flux/shared-ui/components/tooltip";
@@ -333,13 +334,9 @@ function DegradedBanner({ onRebuild }: { onRebuild: () => void }) {
       <span className="min-w-0 flex-1 truncate">
         Vault services degraded. Notes remain editable.
       </span>
-      <button
-        type="button"
-        onClick={onRebuild}
-        className="shrink-0 rounded-md border px-2 py-1 font-medium hover:bg-accent [border-color:var(--layout-separator)]"
-      >
+      <Button size="xs" variant="outline" onClick={onRebuild} className="shrink-0">
         Rebuild index
-      </button>
+      </Button>
     </div>
   );
 }
@@ -4239,7 +4236,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     return (
       <div
         data-workspace-active={leaf.id === activeLeafId}
-        className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-background"
+        className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-transparent"
         onPointerDownCapture={() => {
           setActiveLeafId(leaf.id);
           if (leafActiveTab) setActiveTabId(leafActiveTab.id);
@@ -4357,7 +4354,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             </LayoutGroup>
           </FluxTabBar>
         </div>
-        <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div className="flux-surface m-1 min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg bg-sidebar">
           {leaf.view === "editor" && leaf.stacked && leafTabs.length > 0 ? (
             <div className="flux-stacked-viewport h-full min-h-0 min-w-0 overflow-x-auto overflow-y-hidden [scrollbar-color:color-mix(in_oklab,var(--muted-foreground)_45%,transparent)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:block [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-corner]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-2 [&::-webkit-scrollbar-thumb]:border-transparent [&::-webkit-scrollbar-thumb]:bg-[color-mix(in_oklab,var(--muted-foreground)_45%,transparent)] [&::-webkit-scrollbar-thumb]:bg-clip-padding [&::-webkit-scrollbar-track]:bg-transparent">
               <LayoutGroup id={`flux-stacked-tabs-${leaf.id}`}>
@@ -4370,7 +4367,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                           layout
                           className="flex h-full min-w-64 flex-1"
                           transition={{
-                            layout: { type: "spring", visualDuration: 0.24, bounce: 0.04 },
+                            layout: { type: "spring", visualDuration: 0.24, bounce: 0 },
                           }}
                         >
                           <FluxTabContextMenu {...commandsFor(tab, leaf.id)}>

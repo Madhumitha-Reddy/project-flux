@@ -2,6 +2,7 @@ import type {
   ButtonHTMLAttributes,
   DragEventHandler,
   HTMLAttributes,
+  KeyboardEvent,
   MouseEventHandler,
   ReactNode,
 } from "react";
@@ -50,7 +51,7 @@ export type FluxStackedTabProps = FluxTabProps;
 const TAB_LAYOUT_SPRING = {
   type: "spring" as const,
   visualDuration: 0.2,
-  bounce: 0.06,
+  bounce: 0,
 };
 
 export function FluxTab({
@@ -63,8 +64,35 @@ export function FluxTab({
   onNativeDragEnd,
   children,
   className,
+  onKeyDown,
   ...props
 }: FluxTabProps) {
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    onKeyDown?.(event);
+    if (event.defaultPrevented) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      event.currentTarget.click();
+      return;
+    }
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+
+    const tablist = event.currentTarget.closest('[role="tablist"]');
+    const tabs = Array.from(tablist?.querySelectorAll<HTMLElement>('[role="tab"]') ?? []);
+    const currentIndex = tabs.indexOf(event.currentTarget);
+    if (currentIndex < 0 || tabs.length < 2) return;
+
+    const nextIndex =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? tabs.length - 1
+          : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    event.preventDefault();
+    tabs[nextIndex]?.focus();
+    tabs[nextIndex]?.click();
+  };
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -75,9 +103,9 @@ export function FluxTab({
           data-active={active}
           data-pinned={pinned}
           className={cn(
-            "flux-tab flux-window-no-drag group/tab relative flex h-9 w-52 min-w-2 shrink items-center px-1 text-xs outline-none",
+            "flux-tab flux-window-no-drag group/tab relative flex h-9 w-52 min-w-2 shrink items-center px-0.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
             active
-              ? "z-10 min-w-12 max-w-52 rounded-t-[5px] border border-transparent border-b-0 bg-background text-foreground group-data-[window-active=false]/layout:border-[var(--layout-separator)] group-data-[window-active=false]/layout:shadow-[0_1px_0_var(--background)]"
+              ? "z-10 min-w-12 max-w-52 text-foreground"
               : "max-w-52 text-muted-foreground hover:text-foreground",
             "[&:has(+_.flux-tab[data-active=true])_.flux-tab-separator]:invisible",
             className
@@ -85,6 +113,7 @@ export function FluxTab({
           {...props}
           onDragStartCapture={onNativeDragStart}
           onDragEndCapture={onNativeDragEnd}
+          onKeyDown={handleKeyDown}
           layout="position"
           initial={{
             opacity: 0,
@@ -122,12 +151,14 @@ export function FluxTab({
         >
           <div
             className={cn(
-              "flux-tab-content flex h-8 min-w-0 flex-1 items-center rounded-md px-1",
+              "flux-tab-content relative flex h-8 min-w-0 flex-1 items-center rounded-md px-2",
               !active && "group-hover/tab:bg-[var(--tab-hover)]",
+              active &&
+                "bg-[var(--surface-raised)] font-medium ring-1 ring-[var(--surface-ring)]",
               (active || pinned || closeable) && "gap-1"
             )}
           >
-            <span className="min-w-0 flex-1 truncate rounded-sm text-left leading-5 group-focus-visible/tab:ring-1 group-focus-visible/tab:ring-ring/50">
+            <span className="min-w-0 flex-1 truncate text-left leading-5">
               {children}
             </span>
             {pinned ? (
@@ -225,23 +256,19 @@ export function FluxTabBar({
     <div
       role="tablist"
       className={cn(
-        "flux-window-drag flex h-full min-w-0 items-center overflow-hidden px-3 [&:has(.flux-tab-strip:empty)>.flux-tab-inline-action]:ml-0",
+        "flux-window-drag flex h-full min-w-0 items-center overflow-hidden px-2 [&:has(.flux-tab-strip:empty)>.flux-tab-inline-action]:ml-0",
         className
       )}
       {...props}
     >
-      <div className="flux-tab-strip flex h-full w-max min-w-0 max-w-full shrink items-end overflow-visible">
+      <div className="flux-tab-strip flex h-full w-max min-w-0 max-w-full shrink items-center overflow-visible">
         {children}
       </div>
       {inlineAction ? (
-        <div className="flux-tab-inline-action ml-2 flex shrink-0 translate-y-1 items-end">
-          {inlineAction}
-        </div>
+        <div className="flux-tab-inline-action ml-1 flex shrink-0 items-center">{inlineAction}</div>
       ) : null}
       <div className="min-w-0 flex-1" />
-      {actions ? (
-        <div className="ml-1 flex shrink-0 translate-y-1 items-center">{actions}</div>
-      ) : null}
+      {actions ? <div className="ml-1 flex shrink-0 items-center">{actions}</div> : null}
     </div>
   );
 }
@@ -257,7 +284,7 @@ export function FluxTabAddButton({
       aria-label={ariaLabel}
       title={ariaLabel}
       className={cn(
-        "flux-window-no-drag grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground outline-none hover:bg-accent/60 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/50",
+        "flux-window-no-drag grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground outline-none hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/70",
         className
       )}
       {...props}
@@ -281,7 +308,7 @@ export function FluxTabMenu({
           type="button"
           aria-label="Tab options"
           title="Tab options"
-          className="flux-window-no-drag grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground outline-none hover:bg-accent/60 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/50 data-[state=open]:bg-accent/60 data-[state=open]:text-foreground"
+          className="flux-window-no-drag grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground outline-none hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/70 data-[state=open]:bg-accent/60 data-[state=open]:text-foreground"
         >
           <ChevronDown className="size-4" />
         </button>
