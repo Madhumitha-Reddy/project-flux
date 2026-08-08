@@ -18,16 +18,18 @@ import (
 	"github.com/flux-pkm/server/internal/domain"
 	"github.com/flux-pkm/server/internal/files"
 	gitadapter "github.com/flux-pkm/server/internal/git"
+	"github.com/flux-pkm/server/internal/modelproviders"
 	"github.com/flux-pkm/server/internal/plugins"
 	"github.com/flux-pkm/server/internal/vault"
 	"github.com/gin-gonic/gin"
 )
 
 type Handler struct {
-	app          *application.Service
-	appData      *appdata.Store
-	desktopToken string
-	plugins      *plugins.Manager
+	app             *application.Service
+	appData         *appdata.Store
+	desktopToken    string
+	plugins         *plugins.Manager
+	modelProviders  *modelproviders.Service
 }
 
 const maxRequestBodyBytes = 50 << 20
@@ -44,6 +46,10 @@ func WithDesktopToken(token string) RouteOption {
 
 func WithPlugins(manager *plugins.Manager) RouteOption {
 	return func(handler *Handler) { handler.plugins = manager }
+}
+
+func WithModelProviders(service *modelproviders.Service) RouteOption {
+	return func(handler *Handler) { handler.modelProviders = service }
 }
 
 func RegisterRoutes(router *gin.Engine, app *application.Service, options ...RouteOption) {
@@ -109,6 +115,11 @@ func RegisterRoutes(router *gin.Engine, app *application.Service, options ...Rou
 	v1.GET("/vaults/:vaultId/trash", handler.listTrash)
 	v1.DELETE("/vaults/:vaultId/trash", handler.purgeTrash)
 	v1.DELETE("/vaults/:vaultId/trash/:trashId", handler.permanentlyDelete)
+	v1.GET("/model-providers", handler.listModelProviders)
+	v1.GET("/model-providers/:providerId", handler.getModelProvider)
+	v1.PUT("/model-providers/:providerId", handler.updateModelProvider)
+	v1.GET("/ai-runtimes", handler.listAIRuntimes)
+	v1.GET("/ai-runtimes/:runtimeId", handler.getAIRuntime)
 }
 
 func (h *Handler) vaultConfig(c *gin.Context) {
@@ -1167,6 +1178,79 @@ func (h *Handler) purgeTrash(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+func (h *Handler) listModelProviders(c *gin.Context) {
+	if h.modelProviders == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "model providers service not available"})
+		return
+	}
+	providers := h.modelProviders.ListProviders()
+	c.JSON(http.StatusOK, providers)
+}
+
+func (h *Handler) getModelProvider(c *gin.Context) {
+	if h.modelProviders == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "model providers service not available"})
+		return
+	}
+	provider, err := h.modelProviders.GetProvider(c.Param("providerId"))
+	if err != nil {
+		if errors.Is(err, modelproviders.ErrProviderNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": "provider_not_found", "error": err.Error()})
+		} else {
+			writeError(c, err)
+		}
+		return
+	}
+	c.JSON(http.StatusOK, provider)
+}
+
+func (h *Handler) updateModelProvider(c *gin.Context) {
+	if h.modelProviders == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "model providers service not available"})
+		return
+	}
+	var config map[string]interface{}
+	if err := c.ShouldBindJSON(&config); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_config", "error": err.Error()})
+		return
+	}
+	if err := h.modelProviders.UpdateProvider(c.Param("providerId"), config); err != nil {
+		if errors.Is(err, modelproviders.ErrProviderNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": "provider_not_found", "error": err.Error()})
+		} else {
+			writeError(c, err)
+		}
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) listAIRuntimes(c *gin.Context) {
+	if h.modelProviders == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "model providers service not available"})
+		return
+	}
+	runtimes := h.modelProviders.ListRuntimes()
+	c.JSON(http.StatusOK, runtimes)
+}
+
+func (h *Handler) getAIRuntime(c *gin.Context) {
+	if h.modelProviders == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "model providers service not available"})
+		return
+	}
+	runtime, err := h.modelProviders.GetRuntime(c.Param("runtimeId"))
+	if err != nil {
+		if errors.Is(err, modelproviders.ErrProviderNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": "runtime_not_found", "error": err.Error()})
+		} else {
+			writeError(c, err)
+		}
+		return
+	}
+	c.JSON(http.StatusOK, runtime)
 }
 
 func writeError(c *gin.Context, err error) {
