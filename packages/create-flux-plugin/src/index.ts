@@ -116,6 +116,7 @@ function validateContributions(manifest: JsonObject, pluginId: string): void {
         "layout-dashboard",
         "calendar",
         "list",
+        "git-branch",
       ]).has(String(view.icon))
     ) {
       throw new Error(`${label}.icon is not a supported built-in icon`);

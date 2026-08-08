@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	application "github.com/flux-pkm/server/internal/app"
 	"github.com/flux-pkm/server/internal/appdata"
 	"github.com/flux-pkm/server/internal/domain"
 	"github.com/flux-pkm/server/internal/files"
+	gitadapter "github.com/flux-pkm/server/internal/git"
 	"github.com/flux-pkm/server/internal/plugins"
 	"github.com/flux-pkm/server/internal/vault"
 	"github.com/gin-gonic/gin"
@@ -466,6 +468,60 @@ func (h *Handler) invokePluginCapability(c *gin.Context) {
 		}
 		results, err := h.app.Search(vaultID, input.Query, input.Limit)
 		writePluginResult(c, gin.H{"results": results}, err)
+	case "git.status":
+		result, err := h.app.GitStatus(c.Request.Context(), vaultID)
+		writePluginResult(c, result, err)
+	case "git.init":
+		err := h.app.EnableGit(c.Request.Context(), vaultID)
+		writePluginResult(c, gin.H{"enabled": err == nil}, err)
+	case "git.stage", "git.unstage":
+		var input struct {
+			Paths []string `json:"paths"`
+		}
+		if json.Unmarshal(request.Input, &input) != nil {
+			writeRequestError(c, errors.New("invalid input"))
+			return
+		}
+		var err error
+		if capabilityName == "git.stage" {
+			err = h.app.StageGit(c.Request.Context(), vaultID, input.Paths)
+		} else {
+			err = h.app.UnstageGit(c.Request.Context(), vaultID, input.Paths)
+		}
+		writePluginResult(c, gin.H{"updated": err == nil}, err)
+	case "git.commit":
+		var input struct {
+			Message string   `json:"message"`
+			Paths   []string `json:"paths"`
+		}
+		if json.Unmarshal(request.Input, &input) != nil || strings.TrimSpace(input.Message) == "" {
+			writeRequestError(c, errors.New("invalid input"))
+			return
+		}
+		err := h.app.CommitGit(c.Request.Context(), vaultID, input.Message, input.Paths)
+		writePluginResult(c, gin.H{"committed": err == nil}, err)
+	case "git.pull", "git.push", "git.fetch":
+		var err error
+		switch capabilityName {
+		case "git.pull":
+			err = h.app.PullGit(c.Request.Context(), vaultID)
+		case "git.push":
+			err = h.app.PushGit(c.Request.Context(), vaultID)
+		default:
+			err = h.app.FetchGit(c.Request.Context(), vaultID)
+		}
+		writePluginResult(c, gin.H{"updated": err == nil}, err)
+	case "git.diff":
+		var input struct {
+			Path   string `json:"path"`
+			Staged bool   `json:"staged"`
+		}
+		if json.Unmarshal(request.Input, &input) != nil || strings.TrimSpace(input.Path) == "" {
+			writeRequestError(c, errors.New("invalid input"))
+			return
+		}
+		result, err := h.app.GitDiff(c.Request.Context(), vaultID, input.Path, input.Staged)
+		writePluginResult(c, result, err)
 	default:
 		c.JSON(http.StatusNotImplemented, gin.H{"code": "plugin_capability_unavailable", "error": "capability is not implemented"})
 	}
@@ -1135,7 +1191,14 @@ func writeError(c *gin.Context, err error) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_retention", "error": err.Error()})
 	case errors.Is(err, application.ErrInvalidVaultPlan):
 		c.JSON(http.StatusBadRequest, gin.H{"code": "invalid_vault_plan", "error": err.Error()})
+	case errors.Is(err, gitadapter.ErrNotRepository), errors.Is(err, gitadapter.ErrMessageNeeded), errors.Is(err, gitadapter.ErrInvalidPath):
+		c.JSON(http.StatusBadRequest, gin.H{"code": "git_request_failed", "error": err.Error()})
 	default:
+		var gitError *gitadapter.CommandError
+		if errors.As(err, &gitError) {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"code": "git_command_failed", "error": gitError.Error()})
+			return
+		}
 		if errors.Is(err, os.ErrExist) {
 			c.JSON(http.StatusConflict, gin.H{"code": "path_exists", "error": "destination already exists"})
 			return

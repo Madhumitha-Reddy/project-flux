@@ -9,10 +9,18 @@ export const pluginCapabilities = [
   "tasks.update",
   "ui.command",
   "ui.view",
+  "ui.external",
   "network.fetch",
   "background.run",
   "git.status",
+  "git.init",
+  "git.stage",
+  "git.unstage",
   "git.commit",
+  "git.pull",
+  "git.push",
+  "git.fetch",
+  "git.diff",
 ] as const;
 
 export type PluginCapability = (typeof pluginCapabilities)[number];
@@ -41,6 +49,7 @@ export const pluginViewIcons = [
   "layout-dashboard",
   "calendar",
   "list",
+  "git-branch",
 ] as const;
 
 export type PluginViewIcon = (typeof pluginViewIcons)[number];
@@ -105,13 +114,37 @@ export interface CapabilityDefinitions {
   "tasks.update": { input: unknown; output: unknown };
   "ui.command": { input: unknown; output: unknown };
   "ui.view": { input: unknown; output: unknown };
+  "ui.external": { input: { url: string }; output: { opened: boolean } };
   "network.fetch": {
     input: { url: string; method?: string; headers?: Record<string, string>; body?: string };
     output: { status: number; headers: Record<string, string>; body: string };
   };
   "background.run": { input: unknown; output: unknown };
-  "git.status": { input: Record<string, never>; output: unknown };
-  "git.commit": { input: { message: string; paths?: string[] }; output: unknown };
+  "git.status": {
+    input: Record<string, never>;
+    output: {
+      available: boolean;
+      initialized: boolean;
+      branch?: string;
+      upstream?: string;
+      ahead: number;
+      behind: number;
+      changes: Array<{
+        path: string;
+        originalPath?: string;
+        indexStatus: string;
+        worktreeStatus: string;
+      }>;
+    };
+  };
+  "git.init": { input: Record<string, never>; output: { enabled: boolean } };
+  "git.stage": { input: { paths?: string[] }; output: { updated: boolean } };
+  "git.unstage": { input: { paths?: string[] }; output: { updated: boolean } };
+  "git.commit": { input: { message: string; paths?: string[] }; output: { committed: boolean } };
+  "git.pull": { input: Record<string, never>; output: { updated: boolean } };
+  "git.push": { input: Record<string, never>; output: { updated: boolean } };
+  "git.fetch": { input: Record<string, never>; output: { updated: boolean } };
+  "git.diff": { input: { path: string; staged?: boolean }; output: { path: string; staged: boolean; content: string } };
 }
 
 export interface PluginCapabilityClient {

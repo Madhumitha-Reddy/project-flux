@@ -45,7 +45,7 @@ export const buttonVariants = cva(
           "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/90 data-pressed:bg-secondary/90 *:data-[slot=button-loading-indicator]:text-secondary-foreground [:active,[data-pressed]]:bg-secondary/80",
       },
     },
-  }
+  },
 );
 
 export interface ButtonProps extends useRender.ComponentProps<"button"> {
@@ -65,16 +65,18 @@ export function Button({
   ...props
 }: ButtonProps): React.ReactElement {
   const isDisabled: boolean = Boolean(loading || disabledProp);
-  const typeValue: React.ButtonHTMLAttributes<HTMLButtonElement>["type"] = render
-    ? undefined
-    : "button";
+  const typeValue: React.ButtonHTMLAttributes<HTMLButtonElement>["type"] =
+    render ? undefined : "button";
 
   const defaultProps = {
     children: (
       <>
         {children}
         {loading && (
-          <Spinner className="pointer-events-none absolute" data-slot="button-loading-indicator" />
+          <Spinner
+            className="pointer-events-none absolute"
+            data-slot="button-loading-indicator"
+          />
         )}
       </>
     ),

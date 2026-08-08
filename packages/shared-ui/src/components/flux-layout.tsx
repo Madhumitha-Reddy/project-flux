@@ -248,9 +248,12 @@ export function FluxLayout({
   const rightFootprint = rightVisible ? state.right.width : 0;
   const tabRailLeft = Math.max(leftFootprint, windowControlsInset + 44);
   const rightChromeWidth = Math.max(rightFootprint, hasRightSidebar ? 44 : 0);
+  const collapsedLeftToggleX = windowControlsInset
+    ? windowControlsInset + 4
+    : Math.max(0, (railWidth - 32) / 2);
   const leftToggleX = leftVisible
     ? Math.max(windowControlsInset + 4, leftFootprint - 36)
-    : windowControlsInset + 4;
+    : collapsedLeftToggleX;
   // Splitter keeps zero layout width; handle overflows around its hairline.
   const chromeColor = windowActive ? "var(--window-chrome-active)" : "var(--sidebar)";
   const contentColumns = [

@@ -21,8 +21,9 @@ var (
 var supportedCapabilities = map[string]bool{
 	"vault.read": true, "vault.write": true, "vault.move": true, "vault.delete": true,
 	"vault.search": true, "documents.parse": true, "tasks.query": true, "tasks.update": true,
-	"ui.command": true, "ui.view": true, "network.fetch": true, "background.run": true,
-	"git.status": true, "git.commit": true,
+	"ui.command": true, "ui.view": true, "ui.external": true, "network.fetch": true, "background.run": true,
+	"git.status": true, "git.init": true, "git.stage": true, "git.unstage": true,
+	"git.commit": true, "git.pull": true, "git.push": true, "git.fetch": true, "git.diff": true,
 }
 
 var supportedViewLocations = map[string]bool{
@@ -31,7 +32,7 @@ var supportedViewLocations = map[string]bool{
 
 var supportedViewIcons = map[string]bool{
 	"": true, "puzzle": true, "sparkles": true, "panel-left": true, "panel-right": true,
-	"layout-dashboard": true, "calendar": true, "list": true,
+	"layout-dashboard": true, "calendar": true, "list": true, "git-branch": true,
 }
 
 type Manifest struct {

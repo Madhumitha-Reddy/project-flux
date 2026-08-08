@@ -6,13 +6,20 @@ import type {
   MouseEventHandler,
   ReactNode,
 } from "react";
-import { Check, ChevronDown, FileText, Layers3, Pin, Plus, X } from "lucide-react";
+import { Check, ChevronDown, FileText, Pin, Plus, X } from "lucide-react";
 import type { HTMLMotionProps } from "motion/react";
 import * as m from "motion/react-m";
-import { DropdownMenu } from "radix-ui";
 
 import { cn } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./tooltip";
+import {
+  Menu,
+  MenuCheckboxItem,
+  MenuItem,
+  MenuPopup,
+  MenuSeparator,
+  MenuTrigger,
+} from "./ui/menu";
 
 export interface FluxTabProps extends Omit<HTMLMotionProps<"div">, "title"> {
   active?: boolean;
@@ -95,8 +102,9 @@ export function FluxTab({
 
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <m.div
+      <TooltipTrigger
+        render={
+          <m.div
           role="tab"
           tabIndex={active ? 0 : -1}
           aria-selected={active}
@@ -107,7 +115,6 @@ export function FluxTab({
             active
               ? "z-10 min-w-12 max-w-52 text-foreground"
               : "max-w-52 text-muted-foreground hover:text-foreground",
-            "[&:has(+_.flux-tab[data-active=true])_.flux-tab-separator]:invisible",
             className
           )}
           {...props}
@@ -154,7 +161,7 @@ export function FluxTab({
               "flux-tab-content relative flex h-8 min-w-0 flex-1 items-center rounded-md px-2",
               !active && "group-hover/tab:bg-[var(--tab-hover)]",
               active &&
-                "bg-[var(--surface-raised)] font-medium ring-1 ring-[var(--surface-ring)]",
+                "mx-0.5 bg-[var(--tab-active)] font-medium ring-1 ring-[var(--surface-ring)]",
               (active || pinned || closeable) && "gap-1"
             )}
           >
@@ -188,8 +195,9 @@ export function FluxTab({
               className="flux-tab-separator pointer-events-none absolute top-1/2 -right-0.5 h-4 w-px -translate-y-1/2 bg-[var(--layout-separator)]"
             />
           ) : null}
-        </m.div>
-      </TooltipTrigger>
+          </m.div>
+        }
+      />
       <TooltipContent side="bottom" sideOffset={8} className="max-w-72">
         {tooltip ?? children}
       </TooltipContent>
@@ -216,7 +224,7 @@ export function FluxStackedTab({
       data-pinned={pinned}
       className={cn(
         "flux-window-no-drag group/stacked-tab relative flex h-full w-8 shrink-0 flex-col items-center gap-1 border-r bg-sidebar py-1 text-xs text-muted-foreground outline-none [border-color:var(--layout-separator)] focus-visible:bg-accent/50",
-        active && "bg-background text-foreground",
+        active && "bg-[var(--tab-active)] text-foreground",
         className
       )}
       {...props}
@@ -302,56 +310,49 @@ export function FluxTabMenu({
   onSelect,
 }: FluxTabMenuProps) {
   return (
-    <DropdownMenu.Root>
-      <DropdownMenu.Trigger asChild>
-        <button
+    <Menu>
+      <MenuTrigger
+        render={<button
           type="button"
           aria-label="Tab options"
           title="Tab options"
-          className="flux-window-no-drag grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground outline-none hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/70 data-[state=open]:bg-accent/60 data-[state=open]:text-foreground"
-        >
-          <ChevronDown className="size-4" />
-        </button>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
+          className="flux-window-no-drag grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground outline-none hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/70 data-popup-open:bg-accent/60 data-popup-open:text-foreground"
+        />}
+      >
+        <ChevronDown className="size-4" />
+      </MenuTrigger>
+      <MenuPopup
           align="end"
           sideOffset={6}
-          className="z-[100] max-h-[min(420px,var(--radix-dropdown-menu-content-available-height))] min-w-56 overflow-y-auto rounded-lg border bg-popover p-1 text-popover-foreground shadow-lg [border-color:var(--layout-separator)]"
+          className="z-[100] max-h-[min(420px,var(--available-height))] min-w-56"
         >
-          <DropdownMenu.CheckboxItem
+          <MenuCheckboxItem
             checked={stacked}
             onCheckedChange={(checked) => onStackedChange(checked === true)}
-            className="relative flex h-8 cursor-default select-none items-center gap-2 rounded-md px-2 pr-8 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
           >
-            <Layers3 className="size-4 text-muted-foreground" />
             Stack tabs
-            <DropdownMenu.ItemIndicator className="absolute right-2">
-              <Check className="size-4" />
-            </DropdownMenu.ItemIndicator>
-          </DropdownMenu.CheckboxItem>
-          <DropdownMenu.Separator className="my-1 h-px bg-[var(--layout-separator)]" />
-          <DropdownMenu.Item
+          </MenuCheckboxItem>
+          <MenuSeparator />
+          <MenuItem
             disabled={tabs.length === 0}
-            onSelect={onCloseAll}
-            className="flex h-8 cursor-default select-none items-center gap-2 rounded-md px-2 text-sm text-destructive outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-40 data-[highlighted]:bg-destructive/10"
+            onClick={onCloseAll}
+            variant="destructive"
           >
             <X className="size-4" />
             Close all
-          </DropdownMenu.Item>
-          <DropdownMenu.Separator className="my-1 h-px bg-[var(--layout-separator)]" />
+          </MenuItem>
+          <MenuSeparator />
           {tabs.map((tab) => (
-            <DropdownMenu.Item
+            <MenuItem
               key={tab.id}
-              onSelect={() => onSelect(tab.id)}
-              className="relative flex h-8 max-w-72 cursor-default select-none items-center rounded-md px-2 pr-8 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
+              onClick={() => onSelect(tab.id)}
+              className="relative max-w-72 pr-8"
             >
               <span className="truncate">{tab.label}</span>
               {tab.active ? <Check className="absolute right-2 size-4" /> : null}
-            </DropdownMenu.Item>
+            </MenuItem>
           ))}
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
+      </MenuPopup>
+    </Menu>
   );
 }

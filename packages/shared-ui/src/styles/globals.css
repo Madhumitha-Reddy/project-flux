@@ -84,7 +84,7 @@
   --sidebar-border: #dedfd9;
   --sidebar-ring: #20211f;
   --window-well: #ecede9;
-  --surface-raised: #ffffff;
+  --tab-active: var(--sidebar);
   --window-chrome-active: #ecede9;
   --tab-hover: color-mix(in oklab, var(--window-chrome-active) 92%, var(--foreground) 8%);
   --layout-separator: rgb(32 33 31 / 10%);
@@ -125,7 +125,7 @@
   --sidebar-border: rgb(240 241 236 / 10%);
   --sidebar-ring: #f0f1ec;
   --window-well: #171815;
-  --surface-raised: #242521;
+  --tab-active: var(--sidebar);
   --window-chrome-active: #171815;
   --layout-separator: rgb(240 241 236 / 8%);
   --surface-ring: rgb(240 241 236 / 11%);

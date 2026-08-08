@@ -81,6 +81,7 @@ import { PdfExportDialog } from "./pdf-export";
 import { SettingsDialog } from "./settings-dialog";
 import { APP_STATE_KEY, useFluxSettings } from "./settings-store";
 import { FilePreview } from "./file-preview";
+import { quickCaptureInboxPath } from "./quick-capture-path";
 import {
   closeOtherWorkspaceTabs,
   closeWorkspaceTabsAfter,
@@ -129,6 +130,7 @@ export interface FluxRuntime {
   exportPdf?: (options: PdfExportOptions) => Promise<string | null>;
   getWindowId?: () => Promise<string>;
   setTheme?: (theme: Theme) => Promise<void>;
+  setMenuBarIconEnabled?: (enabled: boolean) => Promise<void>;
   statePersistence?: FluxStatePersistence;
   vaultAccess?: "filesystem" | "registry";
 }
@@ -224,13 +226,65 @@ function PluginSurface({
   view,
   revision,
   onClose,
+  invokeCapability,
 }: {
   view: OpenPluginView;
   revision: number;
   onClose: () => void;
+  invokeCapability: (pluginId: string, capability: PluginCapability, input: unknown) => Promise<unknown>;
 }) {
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const postTheme = useCallback(() => {
+    frameRef.current?.contentWindow?.postMessage(
+      {
+        kind: "flux-plugin-theme",
+        theme: document.documentElement.classList.contains("dark") ? "dark" : "light",
+      },
+      "*"
+    );
+  }, []);
+  useEffect(() => {
+    const receive = (event: MessageEvent) => {
+      if (event.source !== frameRef.current?.contentWindow) return;
+      const message = event.data as {
+        kind?: string;
+        id?: number;
+        capability?: PluginCapability;
+        input?: unknown;
+      };
+      if (
+        message.kind !== "flux-plugin-capability" ||
+        typeof message.id !== "number" ||
+        typeof message.capability !== "string"
+      )
+        return;
+      void invokeCapability(view.pluginId, message.capability, message.input).then(
+        (value) =>
+          frameRef.current?.contentWindow?.postMessage(
+            { kind: "flux-plugin-capability-result", id: message.id, value },
+            "*"
+          ),
+        (error) =>
+          frameRef.current?.contentWindow?.postMessage(
+            {
+              kind: "flux-plugin-capability-result",
+              id: message.id,
+              error: error instanceof Error ? error.message : String(error),
+            },
+            "*"
+          )
+      );
+    };
+    window.addEventListener("message", receive);
+    return () => window.removeEventListener("message", receive);
+  }, [invokeCapability, view.pluginId]);
+  useEffect(() => {
+    const observer = new MutationObserver(postTheme);
+    observer.observe(document.documentElement, { attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, [postTheme]);
   return (
-    <section className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
+    <section className="flex h-full min-h-0 flex-col overflow-hidden bg-sidebar text-sidebar-foreground">
       <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b px-3 [border-color:var(--layout-separator)]">
         <h2 className="truncate text-xs font-semibold">{view.title}</h2>
         <button
@@ -243,11 +297,13 @@ function PluginSurface({
         </button>
       </header>
       <iframe
+        ref={frameRef}
         key={`${view.pluginId}:${view.viewId}:${revision}`}
         title={view.title}
         sandbox="allow-scripts"
         srcDoc={sandboxedPluginDocument(view.html)}
-        className="min-h-0 w-full flex-1 border-0 bg-background"
+        onLoad={postTheme}
+        className="min-h-0 w-full flex-1 border-0 bg-sidebar"
       />
     </section>
   );
@@ -329,7 +385,7 @@ function DegradedBanner({ onRebuild }: { onRebuild: () => void }) {
   return (
     <div
       role="status"
-      className="absolute inset-x-3 top-12 z-40 flex items-center gap-3 rounded-lg border bg-popover/95 px-3 py-2 text-xs text-popover-foreground shadow-lg backdrop-blur [border-color:var(--layout-separator)]"
+      className="mx-2 mt-2 flex shrink-0 items-center gap-3 rounded-lg border bg-popover/95 px-3 py-2 text-xs text-popover-foreground [border-color:var(--layout-separator)]"
     >
       <span className="min-w-0 flex-1 truncate">
         Vault services degraded. Notes remain editable.
@@ -662,7 +718,7 @@ interface DailyNoteConfig {
 const defaultDailyNoteConfig: DailyNoteConfig = {
   dailyFolder: "Daily",
   weeklyFolder: "Daily/Weekly",
-  inboxPath: "Inbox.md",
+  inboxPath: "Inbox",
   dailyFormat: "YYYY-MM-DD",
   weeklyFormat: "GGGG-[W]WW",
   timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -799,17 +855,26 @@ function QuickCapture({ runtime }: { runtime: FluxRuntime }) {
   const [vaults, setVaults] = useState<RecentVault[]>([]);
   const [vaultId, setVaultId] = useState("");
   const [target, setTarget] = useState<"inbox" | "daily">("inbox");
+  const [fileName, setFileName] = useState("Quick note.md");
   const [content, setContent] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const vaultSelectRef = useRef<HTMLSelectElement>(null);
+  const fileNameRef = useRef<HTMLInputElement>(null);
+  const contentRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
+    document.title = "Quick Capture";
     void runtime.connect().then(async () => {
       if (!runtime.client) return;
       const [recent, settings] = await Promise.all([
         runtime.client.listRecentVaults(),
         runtime.client.getAppSettings(),
       ]);
+      if (settings.theme === "dark" || settings.theme === "light" || settings.theme === "system") {
+        useAppStore.getState().setSetting("theme", settings.theme);
+      }
+      useAppStore.getState().hydrate(settings);
       setVaults(recent);
       const configured = String(settings.quickCaptureVaultId ?? "");
       const draft =
@@ -825,20 +890,45 @@ function QuickCapture({ runtime }: { runtime: FluxRuntime }) {
             : ""
       );
       if (typeof draft?.content === "string") setContent(draft.content);
+      if (typeof draft?.fileName === "string") setFileName(draft.fileName);
       if (draft?.target === "inbox" || draft?.target === "daily") setTarget(draft.target);
-    });
+    }).catch((cause) => setError(errorMessage(cause)));
   }, [runtime]);
 
   useEffect(() => {
     if (!runtime.client || !content.trim()) return;
     const timer = window.setTimeout(() => {
-      void runtime.client?.putAppSetting("quickCaptureDraft", { vaultId, target, content });
+      void runtime.client?.putAppSetting("quickCaptureDraft", {
+        vaultId,
+        target,
+        fileName,
+        content,
+      });
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [runtime.client, vaultId, target, content]);
+  }, [runtime.client, vaultId, target, fileName, content]);
 
   const save = async () => {
-    if (!runtime.client || !vaultId || !content.trim()) return;
+    if (!runtime.client) {
+      setError("Unable to connect to FLUX. Try again.");
+      return;
+    }
+    if (!vaultId) {
+      setError("Choose a vault.");
+      vaultSelectRef.current?.focus();
+      return;
+    }
+    if (!content.trim()) {
+      setError("Write something to capture.");
+      contentRef.current?.focus();
+      return;
+    }
+    const inboxFilePath = target === "inbox" ? quickCaptureInboxPath("", fileName) : null;
+    if (target === "inbox" && !inboxFilePath) {
+      setError("Enter a filename without folders.");
+      fileNameRef.current?.focus();
+      return;
+    }
     const selected = vaults.find((item) => item.vaultId === vaultId);
     if (!selected) return;
     setSaving(true);
@@ -849,7 +939,7 @@ function QuickCapture({ runtime }: { runtime: FluxRuntime }) {
       const date = dateKeyInTimeZone(new Date(), config.timeZone);
       const path =
         target === "inbox"
-          ? config.inboxPath
+          ? quickCaptureInboxPath(config.inboxPath, fileName)!
           : `${config.dailyFolder}/${noteFileName(date, config.dailyFormat)}`;
       const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
       if (parent) await runtime.client.createDirectory(vault.id, parent);
@@ -902,54 +992,101 @@ function QuickCapture({ runtime }: { runtime: FluxRuntime }) {
   };
 
   return (
-    <div className="flex h-screen flex-col bg-background p-4 text-foreground">
-      <div className="flex items-center gap-2">
-        <select
-          aria-label="Capture vault"
-          value={vaultId}
-          onChange={(event) => setVaultId(event.target.value)}
-          className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-xs [border-color:var(--layout-separator)]"
-        >
-          <option value="">Choose a vault…</option>
-          {vaults.map((item) => (
-            <option key={item.vaultId} value={item.vaultId}>
-              {item.displayName}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label="Capture destination"
-          value={target}
-          onChange={(event) => setTarget(event.target.value as "inbox" | "daily")}
-          className="h-8 rounded-md border bg-background px-2 text-xs [border-color:var(--layout-separator)]"
-        >
-          <option value="inbox">Inbox</option>
-          <option value="daily">Today</option>
-        </select>
+    <main className="flex h-screen flex-col bg-sidebar text-foreground">
+      <header className="flex h-11 shrink-0 items-center border-b ps-[76px] pe-4 [border-color:var(--layout-separator)] [-webkit-app-region:drag]">
+        <h1 className="text-sm font-medium tracking-[-0.01em]">Quick capture</h1>
+        <span className="ms-auto text-[11px] text-foreground/70">⌘↵ to save</span>
+      </header>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-3 p-3.5">
+        <div className="grid grid-cols-[minmax(0,1fr)_7rem] gap-2.5">
+          <label className="grid min-w-0 gap-1 text-[11px] font-medium text-foreground/70">
+            Vault
+            <select
+              ref={vaultSelectRef}
+              value={vaultId}
+              aria-invalid={Boolean(error && !vaultId)}
+              aria-describedby={error ? "quick-capture-error" : undefined}
+              onChange={(event) => {
+                setVaultId(event.target.value);
+                setError("");
+              }}
+              className="h-8 min-w-0 rounded-md border bg-popover px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar"
+            >
+              <option value="">Choose vault…</option>
+              {vaults.map((item) => (
+                <option key={item.vaultId} value={item.vaultId}>
+                  {item.displayName}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="grid gap-1 text-[11px] font-medium text-foreground/70">
+            Save to
+            <select
+              value={target}
+              onChange={(event) => setTarget(event.target.value as "inbox" | "daily")}
+              className="h-8 rounded-md border bg-popover px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar"
+            >
+              <option value="inbox">Inbox</option>
+              <option value="daily">Today</option>
+            </select>
+          </label>
+        </div>
+
+        {target === "inbox" ? (
+          <label className="grid gap-1 text-[11px] font-medium text-foreground/70">
+            Filename
+            <input
+              ref={fileNameRef}
+              value={fileName}
+              aria-invalid={Boolean(error && !quickCaptureInboxPath("", fileName))}
+              aria-describedby={error ? "quick-capture-error" : undefined}
+              onChange={(event) => {
+                setFileName(event.target.value);
+                setError("");
+              }}
+              placeholder="Quick note.md"
+              className="h-8 rounded-md border bg-popover px-2 text-xs font-normal text-foreground outline-none placeholder:text-foreground/70 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar"
+            />
+          </label>
+        ) : null}
+
+        <label className="flex min-h-0 flex-1 flex-col gap-1 text-[11px] font-medium text-foreground/70">
+          Note
+          <textarea
+            ref={contentRef}
+            autoFocus
+            value={content}
+            aria-invalid={Boolean(error && !content.trim())}
+            aria-describedby={error ? "quick-capture-error" : undefined}
+            onChange={(event) => {
+              setContent(event.target.value);
+              setError("");
+            }}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void save();
+            }}
+            placeholder="Write a note…"
+            className="min-h-0 flex-1 resize-none rounded-lg border bg-background p-3 text-sm font-normal leading-6 text-foreground outline-none placeholder:text-foreground/70 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar [border-color:var(--layout-separator)]"
+          />
+        </label>
+
+        <div className="flex min-h-8 items-center justify-between gap-3">
+          <p id="quick-capture-error" role="status" className="min-w-0 text-xs leading-4 text-destructive">
+            {error}
+          </p>
+          <Button
+            size="sm"
+            loading={saving}
+            onClick={() => void save()}
+            className="shadow-none before:shadow-none"
+          >
+            Save note
+          </Button>
+        </div>
       </div>
-      <textarea
-        autoFocus
-        aria-label="Quick capture"
-        value={content}
-        onChange={(event) => setContent(event.target.value)}
-        onKeyDown={(event) => {
-          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void save();
-        }}
-        placeholder="Capture a thought…"
-        className="mt-3 min-h-0 flex-1 resize-none rounded-lg border bg-background p-3 text-sm leading-6 outline-none focus:ring-2 focus:ring-ring/40 [border-color:var(--layout-separator)]"
-      />
-      <div className="mt-3 flex items-center justify-between gap-3">
-        <span className="truncate text-xs text-destructive">{error}</span>
-        <button
-          type="button"
-          disabled={saving || !vaultId || !content.trim()}
-          onClick={() => void save()}
-          className="shrink-0 rounded-md bg-primary px-4 py-2 text-xs font-medium text-primary-foreground disabled:opacity-40"
-        >
-          {saving ? "Saving…" : "Save capture"}
-        </button>
-      </div>
-    </div>
+    </main>
   );
 }
 
@@ -2239,7 +2376,10 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
     if (persisted?.leftSidebarPane) setLeftSidebarPane(persisted.leftSidebarPane);
     if (persisted?.rightSidebarPane) {
       setRightSidebarPane(
-        persisted.rightSidebarPane === "outline" ? "backlinks" : persisted.rightSidebarPane
+        persisted.rightSidebarPane === "outline" ||
+          persisted.rightSidebarPane === "source-control"
+          ? "backlinks"
+          : persisted.rightSidebarPane
       );
     } else {
       setRightSidebarPane("backlinks");
@@ -2707,6 +2847,25 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   useEffect(() => {
     flushPendingSavesRef.current = flushPendingSaves;
   });
+
+  const invokePluginViewCapability = async (
+    pluginId: string,
+    capability: PluginCapability,
+    input: unknown
+  ) => {
+      if (!runtime.client || !vault) throw new Error("No vault is open");
+      const permissions = vaultPlugins.find((item) => item.pluginId === pluginId)?.grantedPermissions;
+      if (!permissions?.includes(capability)) throw new Error(`capability not granted: ${capability}`);
+      if (capability === "ui.external") {
+        const url = new URL(String((input as { url?: unknown })?.url ?? ""));
+        if (url.protocol !== "https:") throw new Error("only HTTPS links can be opened");
+        if (!runtime.openWindow) throw new Error("external links are unavailable");
+        await runtime.openWindow(url.href);
+        return { opened: true };
+      }
+      if (capability === "git.pull") await flushPendingSaves(vault.id);
+    return runtime.client.invokePluginCapability(vault.id, pluginId, capability, input);
+  };
 
   useEffect(() => {
     const flushCurrentVault = () => {
@@ -4498,7 +4657,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   return (
     <LazyMotion features={domAnimation} strict>
       <MotionConfig reducedMotion="user">
-        <TooltipProvider delayDuration={500} skipDelayDuration={150}>
+        <TooltipProvider>
           <FluxLayout
             key={sessionVaultId || "initial"}
             windowControlsInset={windowControlsInset}
@@ -4542,6 +4701,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                   view={pluginView}
                   revision={pluginRuntimeRevision}
                   onClose={() => setPluginView(undefined)}
+                  invokeCapability={invokePluginViewCapability}
                 />
               ) : (
                 <WorkspaceLeftSidebar
@@ -4594,13 +4754,16 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                   view={pluginView}
                   revision={pluginRuntimeRevision}
                   onClose={() => setPluginView(undefined)}
+                  invokeCapability={invokePluginViewCapability}
                 />
               ) : (
-                <div className="relative h-full min-h-0 min-w-0">
+                <div className="relative flex h-full min-h-0 min-w-0 flex-col">
                   {lifecycle === "degraded" ? (
                     <DegradedBanner onRebuild={() => void rebuildIndex()} />
                   ) : null}
-                  <WorkspaceTree node={workspaceRoot} renderLeaf={renderWorkspaceLeaf} />
+                  <div className="min-h-0 flex-1">
+                    <WorkspaceTree node={workspaceRoot} renderLeaf={renderWorkspaceLeaf} />
+                  </div>
                 </div>
               )
             }
@@ -4610,6 +4773,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                   view={pluginView}
                   revision={pluginRuntimeRevision}
                   onClose={() => setPluginView(undefined)}
+                  invokeCapability={invokePluginViewCapability}
                 />
               ) : (
                 <WorkspaceRightSidebar
@@ -5637,6 +5801,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                 .catch((cause) => setStatus(errorMessage(cause)));
             }}
             getMCPServerCommand={runtime.getMCPServerCommand}
+            onMenuBarIconChange={runtime.setMenuBarIconEnabled}
           />
           <AddBookmarkDialog
             key={`${bookmarkTarget?.path ?? bookmarkTarget?.title ?? "none"}:${addBookmarkDialogOpen}`}

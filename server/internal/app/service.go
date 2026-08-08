@@ -13,6 +13,7 @@ import (
 
 	"github.com/flux-pkm/server/internal/domain"
 	"github.com/flux-pkm/server/internal/files"
+	gitadapter "github.com/flux-pkm/server/internal/git"
 	"github.com/flux-pkm/server/internal/vault"
 )
 
@@ -168,6 +169,78 @@ func (s *Service) VaultPath(vaultID string) (string, error) {
 		return "", err
 	}
 	return context.RootPath(), nil
+}
+
+func (s *Service) GitStatus(ctx context.Context, vaultID string) (domain.GitStatus, error) {
+	root, err := s.VaultPath(vaultID)
+	if err != nil {
+		return domain.GitStatus{}, err
+	}
+	return gitadapter.Status(ctx, root)
+}
+
+func (s *Service) EnableGit(ctx context.Context, vaultID string) error {
+	vaultContext, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return err
+	}
+	return vaultContext.Mutate(func() error { return gitadapter.Enable(ctx, vaultContext.RootPath()) })
+}
+
+func (s *Service) StageGit(ctx context.Context, vaultID string, paths []string) error {
+	vaultContext, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return err
+	}
+	return vaultContext.Mutate(func() error { return gitadapter.Stage(ctx, vaultContext.RootPath(), paths) })
+}
+
+func (s *Service) UnstageGit(ctx context.Context, vaultID string, paths []string) error {
+	vaultContext, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return err
+	}
+	return vaultContext.Mutate(func() error { return gitadapter.Unstage(ctx, vaultContext.RootPath(), paths) })
+}
+
+func (s *Service) CommitGit(ctx context.Context, vaultID, message string, paths []string) error {
+	vaultContext, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return err
+	}
+	return vaultContext.Mutate(func() error { return gitadapter.Commit(ctx, vaultContext.RootPath(), message, paths) })
+}
+
+func (s *Service) PullGit(ctx context.Context, vaultID string) error {
+	vaultContext, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return err
+	}
+	return vaultContext.Mutate(func() error { return gitadapter.Pull(ctx, vaultContext.RootPath()) })
+}
+
+func (s *Service) PushGit(ctx context.Context, vaultID string) error {
+	vaultContext, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return err
+	}
+	return vaultContext.Mutate(func() error { return gitadapter.Push(ctx, vaultContext.RootPath()) })
+}
+
+func (s *Service) FetchGit(ctx context.Context, vaultID string) error {
+	vaultContext, err := s.vaults.Get(vaultID)
+	if err != nil {
+		return err
+	}
+	return vaultContext.Mutate(func() error { return gitadapter.Fetch(ctx, vaultContext.RootPath()) })
+}
+
+func (s *Service) GitDiff(ctx context.Context, vaultID, path string, staged bool) (domain.GitDiff, error) {
+	root, err := s.VaultPath(vaultID)
+	if err != nil {
+		return domain.GitDiff{}, err
+	}
+	return gitadapter.Diff(ctx, root, path, staged)
 }
 
 func (s *Service) VaultConfig(vaultID string) (json.RawMessage, error) {
