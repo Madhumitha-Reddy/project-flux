@@ -227,11 +227,13 @@ function PluginSurface({
   revision,
   onClose,
   invokeCapability,
+  showHeader = true,
 }: {
   view: OpenPluginView;
   revision: number;
   onClose: () => void;
   invokeCapability: (pluginId: string, capability: PluginCapability, input: unknown) => Promise<unknown>;
+  showHeader?: boolean;
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const postTheme = useCallback(() => {
@@ -247,11 +249,16 @@ function PluginSurface({
     const receive = (event: MessageEvent) => {
       if (event.source !== frameRef.current?.contentWindow) return;
       const message = event.data as {
+        type?: string;
         kind?: string;
         id?: number;
         capability?: PluginCapability;
         input?: unknown;
       };
+      if (message.type === "close_plugin_view") {
+        onClose();
+        return;
+      }
       if (
         message.kind !== "flux-plugin-capability" ||
         typeof message.id !== "number" ||
@@ -277,7 +284,7 @@ function PluginSurface({
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [invokeCapability, view.pluginId]);
+  }, [invokeCapability, onClose, view.pluginId]);
   useEffect(() => {
     const observer = new MutationObserver(postTheme);
     observer.observe(document.documentElement, { attributeFilter: ["class"] });
@@ -285,7 +292,7 @@ function PluginSurface({
   }, [postTheme]);
   return (
     <section className="flex h-full min-h-0 flex-col overflow-hidden bg-sidebar text-sidebar-foreground">
-      <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b px-3 [border-color:var(--layout-separator)]">
+      {showHeader ? <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b px-3 [border-color:var(--layout-separator)]">
         <h2 className="truncate text-xs font-semibold">{view.title}</h2>
         <button
           type="button"
@@ -295,7 +302,7 @@ function PluginSurface({
         >
           Close
         </button>
-      </header>
+      </header> : null}
       <iframe
         ref={frameRef}
         key={`${view.pluginId}:${view.viewId}:${revision}`}
@@ -1160,7 +1167,6 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const [vaultPlugins, setVaultPlugins] = useState<VaultPlugin[]>([]);
   const [pluginBusy, setPluginBusy] = useState(false);
   const [pluginRuntimeRevision, setPluginRuntimeRevision] = useState(0);
-  const pluginChecksumRef = useRef("");
   const [pluginView, setPluginView] = useState<OpenPluginView>();
   const [pluginQuery, setPluginQuery] = useState("");
   const [recentVaults, setRecentVaults] = useState<RecentVault[]>([]);
@@ -1940,51 +1946,33 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   );
   const shouldPollDevelopmentPlugins = openPluginIsDevelopment;
   useEffect(() => {
-    if (!shouldPollDevelopmentPlugins || !runtime.client) return;
+    if (
+      !shouldPollDevelopmentPlugins ||
+      !runtime.client ||
+      !vault ||
+      !openPluginId ||
+      !openPluginViewId
+    )
+      return;
     let active = true;
     const refreshDevelopmentBuilds = async () => {
-      const catalog = await runtime.client!.listPlugins();
+      const next = await runtime.client!.getPluginView(
+        vault.id,
+        openPluginId,
+        openPluginViewId
+      );
       if (!active) return;
-      const checksum = catalog
-        .filter(
-          (entry) =>
-            entry.plugin.development &&
-            (entry.active || entry.plugin.status === "staged")
-        )
-        .map((entry) => `${entry.manifest.id}:${entry.plugin.checksum}`)
-        .sort()
-        .join("|");
-      if (pluginChecksumRef.current && pluginChecksumRef.current !== checksum) {
-        setPluginRuntimeRevision((current) => current + 1);
-        const openPluginStillInDevelopment = catalog.some(
-          (entry) =>
-            entry.active &&
-            entry.manifest.id === openPluginId &&
-            entry.plugin.development
-        );
+      setPluginView((current) => {
         if (
-          openPluginStillInDevelopment &&
-          vault &&
-          openPluginId &&
-          openPluginViewId
-        ) {
-          const next = await runtime.client!.getPluginView(
-            vault.id,
-            openPluginId,
-            openPluginViewId
-          );
-          if (!active) return;
-          setPluginView((current) =>
-            current &&
-            current.pluginId === openPluginId &&
-            current.viewId === openPluginViewId
-              ? { ...current, ...next }
-              : current
-          );
-        }
-      }
-      pluginChecksumRef.current = checksum;
-      setPluginCatalog(catalog);
+          !current ||
+          current.pluginId !== openPluginId ||
+          current.viewId !== openPluginViewId ||
+          current.html === next.html
+        )
+          return current;
+        setPluginRuntimeRevision((revision) => revision + 1);
+        return { ...current, ...next };
+      });
     };
     void refreshDevelopmentBuilds().catch(() => undefined);
     const timer = window.setInterval(
@@ -2044,6 +2032,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             id: `${entry.manifest.id}:${view.id}`,
             label: view.title,
             icon: view.icon,
+            iconSrc: entry.viewIcons?.[view.id],
             active,
             onClick: () =>
               active ? setPluginView(undefined) : void openPluginSurface(entry.manifest.id, view),
@@ -2863,7 +2852,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
         await runtime.openWindow(url.href);
         return { opened: true };
       }
-      if (capability === "git.pull") await flushPendingSaves(vault.id);
+      if (["git.pull", "git.checkout", "git.branch.create", "git.discard", "git.resolve"].includes(capability)) {
+        await flushPendingSaves(vault.id);
+      }
     return runtime.client.invokePluginCapability(vault.id, pluginId, capability, input);
   };
 
@@ -4702,6 +4693,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                   revision={pluginRuntimeRevision}
                   onClose={() => setPluginView(undefined)}
                   invokeCapability={invokePluginViewCapability}
+                  showHeader={false}
                 />
               ) : (
                 <WorkspaceLeftSidebar
@@ -4774,6 +4766,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                   revision={pluginRuntimeRevision}
                   onClose={() => setPluginView(undefined)}
                   invokeCapability={invokePluginViewCapability}
+                  showHeader={false}
                 />
               ) : (
                 <WorkspaceRightSidebar
@@ -4825,7 +4818,6 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                 onManageVaults={() => setVaultPickerOpen(true)}
                 version="FLUX 0.0.1"
                 updateStatus="Up to date"
-                gitStatus="Git · Clean"
                 connectionStatus={status}
                 characters={visibleActiveTab?.document?.content.length ?? 0}
                 words={
@@ -5197,12 +5189,20 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                                       type="button"
                                       disabled={pluginBusy}
                                       onClick={() =>
-                                        void updatePlugin(() =>
-                                          runtime.client!.activatePlugin(
+                                        void updatePlugin(async () => {
+                                          if (vault && vaultState?.enabled) {
+                                            await runtime.client!.approvePluginUpdate(
+                                              vault.id,
+                                              entry.manifest.id,
+                                              entry.manifest.version,
+                                              permissions
+                                            );
+                                          }
+                                          await runtime.client!.activatePlugin(
                                             entry.manifest.id,
                                             entry.manifest.version
-                                          )
-                                        )
+                                          );
+                                        })
                                       }
                                       className="rounded-md bg-foreground px-2.5 py-1.5 text-xs text-background disabled:opacity-50"
                                     >

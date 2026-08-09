@@ -28,7 +28,7 @@ export interface FluxStatusBarProps {
   onManageVaults?: () => void;
   version: string;
   updateStatus: string;
-  gitStatus: string;
+  gitStatus?: string;
   connectionStatus: string;
   characters: number;
   words: number;
@@ -99,11 +99,15 @@ export function FluxStatusBar({
         <span className="truncate" title={`${version} · ${updateStatus}`}>
           {version} · {updateStatus}
         </span>
-        <StatusSeparator />
-        <span className="flex shrink-0 items-center gap-1" title="Git plugin status">
-          <GitBranch className="size-3.5" />
-          {gitStatus}
-        </span>
+        {gitStatus ? (
+          <>
+            <StatusSeparator />
+            <span className="flex shrink-0 items-center gap-1" title="Git plugin status">
+              <GitBranch className="size-3.5" />
+              {gitStatus}
+            </span>
+          </>
+        ) : null}
       </div>
 
       <span className="max-w-64 truncate px-2 text-center" title={connectionStatus}>

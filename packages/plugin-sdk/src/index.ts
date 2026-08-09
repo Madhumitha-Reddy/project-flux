@@ -20,7 +20,17 @@ export const pluginCapabilities = [
   "git.pull",
   "git.push",
   "git.fetch",
+  "git.remote.set",
+  "git.remote.remove",
   "git.diff",
+  "git.discard",
+  "git.branches",
+  "git.checkout",
+  "git.branch.create",
+  "git.history",
+  "git.resolve",
+  "ai.providers",
+  "ai.chat",
 ] as const;
 
 export type PluginCapability = (typeof pluginCapabilities)[number];
@@ -62,6 +72,8 @@ export interface PluginViewContribution {
   location?: PluginViewLocation;
   /** Safe host-rendered icon name. Arbitrary SVG/HTML is not accepted. */
   icon?: PluginViewIcon;
+  /** Optional packaged SVG, for example `dist/icon.svg`. Takes precedence over `icon`. */
+  iconPath?: string;
 }
 
 export type PluginSettingContribution =
@@ -127,6 +139,8 @@ export interface CapabilityDefinitions {
       initialized: boolean;
       branch?: string;
       upstream?: string;
+      origin?: string;
+      remotes: Array<{ name: string; url: string }>;
       ahead: number;
       behind: number;
       changes: Array<{
@@ -142,9 +156,38 @@ export interface CapabilityDefinitions {
   "git.unstage": { input: { paths?: string[] }; output: { updated: boolean } };
   "git.commit": { input: { message: string; paths?: string[] }; output: { committed: boolean } };
   "git.pull": { input: Record<string, never>; output: { updated: boolean } };
-  "git.push": { input: Record<string, never>; output: { updated: boolean } };
+  "git.push": { input: { remote?: string }; output: { updated: boolean } };
   "git.fetch": { input: Record<string, never>; output: { updated: boolean } };
+  "git.remote.set": { input: { name: string; url: string }; output: { updated: boolean } };
+  "git.remote.remove": { input: { name: string }; output: { updated: boolean } };
   "git.diff": { input: { path: string; staged?: boolean }; output: { path: string; staged: boolean; content: string } };
+  "git.discard": { input: { paths: string[] }; output: { updated: boolean } };
+  "git.branches": { input: Record<string, never>; output: { branches: Array<{ name: string; current: boolean }> } };
+  "git.checkout": { input: { branch: string }; output: { updated: boolean } };
+  "git.branch.create": { input: { branch: string }; output: { updated: boolean } };
+  "git.history": { input: { limit?: number }; output: { commits: Array<{ hash: string; shortHash: string; author: string; date: string; subject: string }> } };
+  "git.resolve": { input: { path: string; strategy: "ours" | "theirs" }; output: { updated: boolean } };
+  "ai.providers": {
+    input: Record<string, never>;
+    output: Array<{
+      id: string;
+      type: string;
+      name: string;
+      enabled: boolean;
+      available: boolean;
+      models?: string[];
+      capabilities: string[];
+    }>;
+  };
+  "ai.chat": {
+    input: {
+      provider: string;
+      model?: string;
+      messages: Array<{ role: "user" | "assistant" | "system"; content: string }>;
+      stream?: boolean;
+    } | { streamId: string };
+    output: { reply: string; streamId?: string; done?: boolean; error?: string };
+  };
 }
 
 export interface PluginCapabilityClient {
