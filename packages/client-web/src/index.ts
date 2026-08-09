@@ -203,6 +203,18 @@ export class WebFluxClient implements FluxClient {
     );
   }
 
+  approvePluginUpdate(
+    vaultId: string,
+    pluginId: string,
+    version: string,
+    grantedPermissions: string[]
+  ) {
+    return this.request<void>(
+      `/vaults/${encodeURIComponent(vaultId)}/plugins/${encodeURIComponent(pluginId)}/${encodeURIComponent(version)}/approve`,
+      { method: "POST", body: JSON.stringify({ grantedPermissions }) }
+    );
+  }
+
   rollbackPlugin(pluginId: string) {
     return this.request<void>(`/plugins/${encodeURIComponent(pluginId)}/rollback`, {
       method: "POST",

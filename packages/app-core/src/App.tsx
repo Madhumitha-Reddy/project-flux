@@ -227,11 +227,13 @@ function PluginSurface({
   revision,
   onClose,
   invokeCapability,
+  showHeader = true,
 }: {
   view: OpenPluginView;
   revision: number;
   onClose: () => void;
   invokeCapability: (pluginId: string, capability: PluginCapability, input: unknown) => Promise<unknown>;
+  showHeader?: boolean;
 }) {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const postTheme = useCallback(() => {
@@ -290,7 +292,7 @@ function PluginSurface({
   }, [postTheme]);
   return (
     <section className="flex h-full min-h-0 flex-col overflow-hidden bg-sidebar text-sidebar-foreground">
-      <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b px-3 [border-color:var(--layout-separator)]">
+      {showHeader ? <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b px-3 [border-color:var(--layout-separator)]">
         <h2 className="truncate text-xs font-semibold">{view.title}</h2>
         <button
           type="button"
@@ -300,7 +302,7 @@ function PluginSurface({
         >
           Close
         </button>
-      </header>
+      </header> : null}
       <iframe
         ref={frameRef}
         key={`${view.pluginId}:${view.viewId}:${revision}`}
@@ -2030,6 +2032,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
             id: `${entry.manifest.id}:${view.id}`,
             label: view.title,
             icon: view.icon,
+            iconSrc: entry.viewIcons?.[view.id],
             active,
             onClick: () =>
               active ? setPluginView(undefined) : void openPluginSurface(entry.manifest.id, view),
@@ -2849,7 +2852,9 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
         await runtime.openWindow(url.href);
         return { opened: true };
       }
-      if (capability === "git.pull") await flushPendingSaves(vault.id);
+      if (["git.pull", "git.checkout", "git.branch.create", "git.discard", "git.resolve"].includes(capability)) {
+        await flushPendingSaves(vault.id);
+      }
     return runtime.client.invokePluginCapability(vault.id, pluginId, capability, input);
   };
 
@@ -4688,6 +4693,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                   revision={pluginRuntimeRevision}
                   onClose={() => setPluginView(undefined)}
                   invokeCapability={invokePluginViewCapability}
+                  showHeader={false}
                 />
               ) : (
                 <WorkspaceLeftSidebar
@@ -4760,6 +4766,7 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                   revision={pluginRuntimeRevision}
                   onClose={() => setPluginView(undefined)}
                   invokeCapability={invokePluginViewCapability}
+                  showHeader={false}
                 />
               ) : (
                 <WorkspaceRightSidebar
@@ -4811,7 +4818,6 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                 onManageVaults={() => setVaultPickerOpen(true)}
                 version="FLUX 0.0.1"
                 updateStatus="Up to date"
-                gitStatus="Git · Clean"
                 connectionStatus={status}
                 characters={visibleActiveTab?.document?.content.length ?? 0}
                 words={
@@ -5183,12 +5189,20 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
                                       type="button"
                                       disabled={pluginBusy}
                                       onClick={() =>
-                                        void updatePlugin(() =>
-                                          runtime.client!.activatePlugin(
+                                        void updatePlugin(async () => {
+                                          if (vault && vaultState?.enabled) {
+                                            await runtime.client!.approvePluginUpdate(
+                                              vault.id,
+                                              entry.manifest.id,
+                                              entry.manifest.version,
+                                              permissions
+                                            );
+                                          }
+                                          await runtime.client!.activatePlugin(
                                             entry.manifest.id,
                                             entry.manifest.version
-                                          )
-                                        )
+                                          );
+                                        })
                                       }
                                       className="rounded-md bg-foreground px-2.5 py-1.5 text-xs text-background disabled:opacity-50"
                                     >

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -17,6 +18,7 @@ var (
 	ErrNotRepository = errors.New("version control is not enabled for this vault")
 	ErrMessageNeeded = errors.New("commit message is required")
 	ErrInvalidPath   = errors.New("invalid Git path")
+	ErrInvalidRemote = errors.New("invalid remote URL")
 )
 
 type CommandError struct{ Message string }
@@ -27,7 +29,7 @@ func Status(ctx context.Context, root string) (domain.GitStatus, error) {
 	if _, err := exec.LookPath("git"); err != nil {
 		return domain.GitStatus{Changes: []domain.GitChange{}}, nil
 	}
-	status := domain.GitStatus{Available: true, Changes: []domain.GitChange{}}
+	status := domain.GitStatus{Available: true, Changes: []domain.GitChange{}, Remotes: []domain.GitRemote{}}
 	top, err := run(ctx, root, "rev-parse", "--show-toplevel")
 	if err != nil || !samePath(strings.TrimSpace(string(top)), root) {
 		return status, nil
@@ -38,6 +40,16 @@ func Status(ctx context.Context, root string) (domain.GitStatus, error) {
 		return domain.GitStatus{}, err
 	}
 	parseStatus(out, &status)
+	status.Remotes, err = Remotes(ctx, root)
+	if err != nil {
+		return domain.GitStatus{}, err
+	}
+	for _, remote := range status.Remotes {
+		if remote.Name == "origin" {
+			status.Origin = remote.URL
+			break
+		}
+	}
 	return status, nil
 }
 
@@ -66,9 +78,12 @@ func Stage(ctx context.Context, root string, paths []string) error {
 		return err
 	}
 	if len(paths) == 0 {
-		args = append(args, ".", ":(exclude,top).flux/**")
+		args = append(args, ".")
 	}
-	_, err = run(ctx, root, args...)
+	if _, err = run(ctx, root, args...); err != nil || len(paths) != 0 {
+		return err
+	}
+	_, err = run(ctx, root, "rm", "--cached", "-r", "--ignore-unmatch", "--", ".flux")
 	return err
 }
 
@@ -116,11 +131,99 @@ func Pull(ctx context.Context, root string) error {
 }
 
 func Push(ctx context.Context, root string) error {
+	return PushTo(ctx, root, "")
+}
+
+func PushTo(ctx context.Context, root, remote string) error {
+	if err := requireRepository(ctx, root); err != nil {
+		return err
+	}
+	status, err := Status(ctx, root)
+	if err != nil {
+		return err
+	}
+	remote = strings.TrimSpace(remote)
+	if remote != "" {
+		if err := validateRemoteName(ctx, root, remote); err != nil {
+			return err
+		}
+		if status.Upstream == "" {
+			return repositoryCommand(ctx, root, "push", "-u", remote, "HEAD")
+		}
+		return repositoryCommand(ctx, root, "push", remote, "HEAD")
+	}
+	if status.Upstream == "" && status.Origin != "" {
+		return repositoryCommand(ctx, root, "push", "-u", "origin", "HEAD")
+	}
 	return repositoryCommand(ctx, root, "push")
 }
 
 func Fetch(ctx context.Context, root string) error {
-	return repositoryCommand(ctx, root, "fetch", "--prune")
+	return repositoryCommand(ctx, root, "fetch", "--all", "--prune")
+}
+
+func Remotes(ctx context.Context, root string) ([]domain.GitRemote, error) {
+	out, err := run(ctx, root, "remote")
+	if err != nil {
+		return nil, err
+	}
+	remotes := make([]domain.GitRemote, 0)
+	for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if name == "" {
+			continue
+		}
+		url, urlErr := run(ctx, root, "remote", "get-url", name)
+		if urlErr != nil {
+			return nil, urlErr
+		}
+		remotes = append(remotes, domain.GitRemote{Name: name, URL: strings.TrimSpace(string(url))})
+	}
+	return remotes, nil
+}
+
+func SetRemote(ctx context.Context, root, name, url string) error {
+	if err := requireRepository(ctx, root); err != nil {
+		return err
+	}
+	name = strings.TrimSpace(name)
+	url = strings.TrimSpace(url)
+	if err := validateRemoteName(ctx, root, name); err != nil {
+		return err
+	}
+	if url == "" || strings.HasPrefix(url, "-") || strings.ContainsRune(url, 0) {
+		return ErrInvalidRemote
+	}
+	if _, err := run(ctx, root, "remote", "get-url", name); err == nil {
+		_, err = run(ctx, root, "remote", "set-url", name, url)
+		return err
+	}
+	_, err := run(ctx, root, "remote", "add", name, url)
+	return err
+}
+
+func RemoveRemote(ctx context.Context, root, name string) error {
+	if err := requireRepository(ctx, root); err != nil {
+		return err
+	}
+	name = strings.TrimSpace(name)
+	if err := validateRemoteName(ctx, root, name); err != nil {
+		return err
+	}
+	if _, err := run(ctx, root, "remote", "get-url", name); err != nil {
+		return nil
+	}
+	_, err := run(ctx, root, "remote", "remove", name)
+	return err
+}
+
+func validateRemoteName(ctx context.Context, root, name string) error {
+	if name == "" || strings.HasPrefix(name, "-") || strings.ContainsAny(name, " \t\r\n\x00") {
+		return ErrInvalidRemote
+	}
+	if _, err := run(ctx, root, "check-ref-format", "refs/remotes/"+name); err != nil {
+		return ErrInvalidRemote
+	}
+	return nil
 }
 
 func Diff(ctx context.Context, root, path string, staged bool) (domain.GitDiff, error) {
@@ -146,6 +249,115 @@ func Diff(ctx context.Context, root, path string, staged bool) (domain.GitDiff, 
 		out = append(out[:maxDiffBytes], []byte("\n… diff truncated by Flux\n")...)
 	}
 	return domain.GitDiff{Path: path, Staged: staged, Content: string(out)}, nil
+}
+
+func Discard(ctx context.Context, root string, paths []string) error {
+	if err := requireRepository(ctx, root); err != nil {
+		return err
+	}
+	validated, err := pathArgs(nil, paths)
+	if err != nil || len(validated) == 0 {
+		if err != nil {
+			return err
+		}
+		return ErrInvalidPath
+	}
+	for _, pathspec := range validated {
+		if _, trackedErr := run(ctx, root, "ls-files", "--error-unmatch", "--", pathspec); trackedErr == nil {
+			if _, err := run(ctx, root, "restore", "--worktree", "--", pathspec); err != nil {
+				return err
+			}
+		} else if _, err := run(ctx, root, "clean", "-f", "--", pathspec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func Branches(ctx context.Context, root string) ([]domain.GitBranch, error) {
+	if err := requireRepository(ctx, root); err != nil {
+		return nil, err
+	}
+	current, _ := run(ctx, root, "branch", "--show-current")
+	out, err := run(ctx, root, "branch", "--format=%(refname:short)")
+	if err != nil {
+		return nil, err
+	}
+	currentName := strings.TrimSpace(string(current))
+	branches := make([]domain.GitBranch, 0)
+	for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if name != "" {
+			branches = append(branches, domain.GitBranch{Name: name, Current: name == currentName})
+		}
+	}
+	if currentName != "" && !slices.ContainsFunc(branches, func(branch domain.GitBranch) bool { return branch.Name == currentName }) {
+		branches = append(branches, domain.GitBranch{Name: currentName, Current: true})
+	}
+	return branches, nil
+}
+
+func Checkout(ctx context.Context, root, branch string, create bool) error {
+	if err := requireRepository(ctx, root); err != nil {
+		return err
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" || strings.HasPrefix(branch, "-") {
+		return errors.New("invalid branch name")
+	}
+	if _, err := run(ctx, root, "check-ref-format", "--branch", branch); err != nil {
+		return err
+	}
+	args := []string{"switch"}
+	if create {
+		args = append(args, "-c")
+	}
+	args = append(args, branch)
+	_, err := run(ctx, root, args...)
+	return err
+}
+
+func History(ctx context.Context, root string, limit int) ([]domain.GitCommit, error) {
+	if err := requireRepository(ctx, root); err != nil {
+		return nil, err
+	}
+	if _, err := run(ctx, root, "rev-parse", "--verify", "HEAD"); err != nil {
+		return []domain.GitCommit{}, nil
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	out, err := run(ctx, root, "log", "-n", strconv.Itoa(limit), "--format=%H%x00%h%x00%an%x00%aI%x00%s%x00")
+	if err != nil {
+		return nil, err
+	}
+	fields := bytes.Split(out, []byte{0})
+	commits := make([]domain.GitCommit, 0, len(fields)/5)
+	for index := 0; index+4 < len(fields); index += 5 {
+		hash := strings.TrimSpace(string(fields[index]))
+		if hash == "" {
+			continue
+		}
+		commits = append(commits, domain.GitCommit{Hash: hash, ShortHash: string(fields[index+1]), Author: string(fields[index+2]), Date: string(fields[index+3]), Subject: string(fields[index+4])})
+	}
+	return commits, nil
+}
+
+func Resolve(ctx context.Context, root, path, strategy string) error {
+	if err := requireRepository(ctx, root); err != nil {
+		return err
+	}
+	paths, err := pathArgs(nil, []string{path})
+	if err != nil {
+		return err
+	}
+	if strategy != "ours" && strategy != "theirs" {
+		return errors.New("resolution strategy must be ours or theirs")
+	}
+	if _, err := run(ctx, root, "checkout", "--"+strategy, "--", paths[0]); err != nil {
+		return err
+	}
+	_, err = run(ctx, root, "add", "--", paths[0])
+	return err
 }
 
 func repositoryCommand(ctx context.Context, root string, args ...string) error {

@@ -221,7 +221,9 @@ export interface PluginManifest {
         | "panel-right"
         | "layout-dashboard"
         | "calendar"
-        | "list";
+        | "list"
+        | "git-branch";
+      iconPath?: string;
     }>;
     settings?: Array<{
       id: string;
@@ -249,6 +251,7 @@ export interface PluginCatalogEntry {
   manifest: PluginManifest;
   plugin: InstalledPlugin;
   active: boolean;
+  viewIcons?: Record<string, string>;
 }
 
 export interface PluginInstallResult {
@@ -316,6 +319,12 @@ export interface FluxClient {
   installMarketplacePlugin(pluginId: string): Promise<PluginInstallResult>;
   installPlugin(packageData: Uint8Array, sha256: string): Promise<PluginInstallResult>;
   activatePlugin(pluginId: string, version: string): Promise<void>;
+  approvePluginUpdate(
+    vaultId: string,
+    pluginId: string,
+    version: string,
+    grantedPermissions: string[]
+  ): Promise<void>;
   rollbackPlugin(pluginId: string): Promise<void>;
   uninstallPlugin(pluginId: string, version: string): Promise<void>;
   listVaultPlugins(vaultId: string): Promise<VaultPlugin[]>;

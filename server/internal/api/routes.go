@@ -76,6 +76,7 @@ func RegisterRoutes(router *gin.Engine, app *application.Service, options ...Rou
 	v1.POST("/plugins/install", handler.installPlugin)
 	v1.POST("/plugins/marketplace/:pluginId/install", handler.installMarketplacePlugin)
 	v1.POST("/plugins/:pluginId/:version/activate", handler.activatePlugin)
+	v1.POST("/vaults/:vaultId/plugins/:pluginId/:version/approve", handler.approvePluginUpdate)
 	v1.POST("/plugins/:pluginId/rollback", handler.rollbackPlugin)
 	v1.DELETE("/plugins/:pluginId/:version", handler.uninstallPlugin)
 	v1.POST("/vaults/open", handler.openVault)
@@ -317,6 +318,22 @@ func (h *Handler) activatePlugin(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+func (h *Handler) approvePluginUpdate(c *gin.Context) {
+	if !h.requirePlugins(c) {
+		return
+	}
+	var request enablePluginRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		writeRequestError(c, err)
+		return
+	}
+	if err := h.plugins.ApproveUpdateForVault(c.Param("vaultId"), c.Param("pluginId"), c.Param("version"), request.GrantedPermissions); err != nil {
+		writePluginError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func (h *Handler) rollbackPlugin(c *gin.Context) {
 	if !h.requirePlugins(c) {
 		return
@@ -517,10 +534,44 @@ func (h *Handler) invokePluginCapability(c *gin.Context) {
 		case "git.pull":
 			err = h.app.PullGit(c.Request.Context(), vaultID)
 		case "git.push":
-			err = h.app.PushGit(c.Request.Context(), vaultID)
+			var input struct {
+				Remote string `json:"remote"`
+			}
+			if json.Unmarshal(request.Input, &input) != nil {
+				writeRequestError(c, errors.New("invalid input"))
+				return
+			}
+			err = h.app.PushGitTo(c.Request.Context(), vaultID, input.Remote)
 		default:
 			err = h.app.FetchGit(c.Request.Context(), vaultID)
 		}
+		writePluginResult(c, gin.H{"updated": err == nil}, err)
+	case "git.remote.set":
+		var input struct {
+			Name string `json:"name"`
+			URL  string `json:"url"`
+		}
+		if json.Unmarshal(request.Input, &input) != nil || strings.TrimSpace(input.URL) == "" {
+			writeRequestError(c, errors.New("invalid input"))
+			return
+		}
+		if strings.TrimSpace(input.Name) == "" {
+			input.Name = "origin"
+		}
+		err := h.app.SetGitRemote(c.Request.Context(), vaultID, input.Name, input.URL)
+		writePluginResult(c, gin.H{"updated": err == nil}, err)
+	case "git.remote.remove":
+		var input struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(request.Input, &input) != nil {
+			writeRequestError(c, errors.New("invalid input"))
+			return
+		}
+		if strings.TrimSpace(input.Name) == "" {
+			input.Name = "origin"
+		}
+		err := h.app.RemoveGitRemote(c.Request.Context(), vaultID, input.Name)
 		writePluginResult(c, gin.H{"updated": err == nil}, err)
 	case "git.diff":
 		var input struct {
@@ -533,6 +584,47 @@ func (h *Handler) invokePluginCapability(c *gin.Context) {
 		}
 		result, err := h.app.GitDiff(c.Request.Context(), vaultID, input.Path, input.Staged)
 		writePluginResult(c, result, err)
+	case "git.discard":
+		var input struct {
+			Paths []string `json:"paths"`
+		}
+		if json.Unmarshal(request.Input, &input) != nil || len(input.Paths) == 0 {
+			writeRequestError(c, errors.New("invalid input"))
+			return
+		}
+		err := h.app.DiscardGit(c.Request.Context(), vaultID, input.Paths)
+		writePluginResult(c, gin.H{"updated": err == nil}, err)
+	case "git.branches":
+		result, err := h.app.GitBranches(c.Request.Context(), vaultID)
+		writePluginResult(c, gin.H{"branches": result}, err)
+	case "git.checkout", "git.branch.create":
+		var input struct {
+			Branch string `json:"branch"`
+		}
+		if json.Unmarshal(request.Input, &input) != nil || strings.TrimSpace(input.Branch) == "" {
+			writeRequestError(c, errors.New("invalid input"))
+			return
+		}
+		err := h.app.CheckoutGit(c.Request.Context(), vaultID, input.Branch, capabilityName == "git.branch.create")
+		writePluginResult(c, gin.H{"updated": err == nil}, err)
+	case "git.history":
+		var input struct {
+			Limit int `json:"limit"`
+		}
+		if json.Unmarshal(request.Input, &input) != nil {
+			writeRequestError(c, errors.New("invalid input"))
+			return
+		}
+		result, err := h.app.GitHistory(c.Request.Context(), vaultID, input.Limit)
+		writePluginResult(c, gin.H{"commits": result}, err)
+	case "git.resolve":
+		var input struct{ Path, Strategy string }
+		if json.Unmarshal(request.Input, &input) != nil || strings.TrimSpace(input.Path) == "" {
+			writeRequestError(c, errors.New("invalid input"))
+			return
+		}
+		err := h.app.ResolveGit(c.Request.Context(), vaultID, input.Path, input.Strategy)
+		writePluginResult(c, gin.H{"updated": err == nil}, err)
 	case "ai.providers":
 		if h.modelProviders == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"code": "ai_unavailable", "error": "AI provider service is unavailable"})
