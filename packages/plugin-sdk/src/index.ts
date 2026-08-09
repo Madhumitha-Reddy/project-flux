@@ -21,6 +21,8 @@ export const pluginCapabilities = [
   "git.push",
   "git.fetch",
   "git.diff",
+  "ai.providers",
+  "ai.chat",
 ] as const;
 
 export type PluginCapability = (typeof pluginCapabilities)[number];
@@ -145,6 +147,27 @@ export interface CapabilityDefinitions {
   "git.push": { input: Record<string, never>; output: { updated: boolean } };
   "git.fetch": { input: Record<string, never>; output: { updated: boolean } };
   "git.diff": { input: { path: string; staged?: boolean }; output: { path: string; staged: boolean; content: string } };
+  "ai.providers": {
+    input: Record<string, never>;
+    output: Array<{
+      id: string;
+      type: string;
+      name: string;
+      enabled: boolean;
+      available: boolean;
+      models?: string[];
+      capabilities: string[];
+    }>;
+  };
+  "ai.chat": {
+    input: {
+      provider: string;
+      model?: string;
+      messages: Array<{ role: "user" | "assistant" | "system"; content: string }>;
+      stream?: boolean;
+    } | { streamId: string };
+    output: { reply: string; streamId?: string; done?: boolean; error?: string };
+  };
 }
 
 export interface PluginCapabilityClient {

@@ -247,11 +247,16 @@ function PluginSurface({
     const receive = (event: MessageEvent) => {
       if (event.source !== frameRef.current?.contentWindow) return;
       const message = event.data as {
+        type?: string;
         kind?: string;
         id?: number;
         capability?: PluginCapability;
         input?: unknown;
       };
+      if (message.type === "close_plugin_view") {
+        onClose();
+        return;
+      }
       if (
         message.kind !== "flux-plugin-capability" ||
         typeof message.id !== "number" ||
@@ -277,7 +282,7 @@ function PluginSurface({
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  }, [invokeCapability, view.pluginId]);
+  }, [invokeCapability, onClose, view.pluginId]);
   useEffect(() => {
     const observer = new MutationObserver(postTheme);
     observer.observe(document.documentElement, { attributeFilter: ["class"] });
@@ -1160,7 +1165,6 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   const [vaultPlugins, setVaultPlugins] = useState<VaultPlugin[]>([]);
   const [pluginBusy, setPluginBusy] = useState(false);
   const [pluginRuntimeRevision, setPluginRuntimeRevision] = useState(0);
-  const pluginChecksumRef = useRef("");
   const [pluginView, setPluginView] = useState<OpenPluginView>();
   const [pluginQuery, setPluginQuery] = useState("");
   const [recentVaults, setRecentVaults] = useState<RecentVault[]>([]);
@@ -1940,51 +1944,33 @@ function FluxAppContent({ runtime, windowControlsInset }: FluxAppProps) {
   );
   const shouldPollDevelopmentPlugins = openPluginIsDevelopment;
   useEffect(() => {
-    if (!shouldPollDevelopmentPlugins || !runtime.client) return;
+    if (
+      !shouldPollDevelopmentPlugins ||
+      !runtime.client ||
+      !vault ||
+      !openPluginId ||
+      !openPluginViewId
+    )
+      return;
     let active = true;
     const refreshDevelopmentBuilds = async () => {
-      const catalog = await runtime.client!.listPlugins();
+      const next = await runtime.client!.getPluginView(
+        vault.id,
+        openPluginId,
+        openPluginViewId
+      );
       if (!active) return;
-      const checksum = catalog
-        .filter(
-          (entry) =>
-            entry.plugin.development &&
-            (entry.active || entry.plugin.status === "staged")
-        )
-        .map((entry) => `${entry.manifest.id}:${entry.plugin.checksum}`)
-        .sort()
-        .join("|");
-      if (pluginChecksumRef.current && pluginChecksumRef.current !== checksum) {
-        setPluginRuntimeRevision((current) => current + 1);
-        const openPluginStillInDevelopment = catalog.some(
-          (entry) =>
-            entry.active &&
-            entry.manifest.id === openPluginId &&
-            entry.plugin.development
-        );
+      setPluginView((current) => {
         if (
-          openPluginStillInDevelopment &&
-          vault &&
-          openPluginId &&
-          openPluginViewId
-        ) {
-          const next = await runtime.client!.getPluginView(
-            vault.id,
-            openPluginId,
-            openPluginViewId
-          );
-          if (!active) return;
-          setPluginView((current) =>
-            current &&
-            current.pluginId === openPluginId &&
-            current.viewId === openPluginViewId
-              ? { ...current, ...next }
-              : current
-          );
-        }
-      }
-      pluginChecksumRef.current = checksum;
-      setPluginCatalog(catalog);
+          !current ||
+          current.pluginId !== openPluginId ||
+          current.viewId !== openPluginViewId ||
+          current.html === next.html
+        )
+          return current;
+        setPluginRuntimeRevision((revision) => revision + 1);
+        return { ...current, ...next };
+      });
     };
     void refreshDevelopmentBuilds().catch(() => undefined);
     const timer = window.setInterval(

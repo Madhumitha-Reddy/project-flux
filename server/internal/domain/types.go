@@ -175,20 +175,22 @@ type ModelProvider struct {
 	Name         string                 `json:"name"`
 	Description  string                 `json:"description,omitempty"`
 	Enabled      bool                   `json:"enabled"`
+	Available    bool                   `json:"available"`
+	Models       []string               `json:"models,omitempty"`
 	Config       map[string]interface{} `json:"config"`
 	Capabilities []string               `json:"capabilities"`
 }
 
 type AIRuntimeCapabilities struct {
-	Chat             bool `json:"chat"`
-	Streaming        bool `json:"streaming"`
-	ToolCalling      bool `json:"toolCalling"`
-	Vision           bool `json:"vision"`
-	PDFInput         bool `json:"pdfInput"`
-	Embeddings       bool `json:"embeddings"`
-	StructuredOutput bool `json:"structuredOutput"`
+	Chat              bool `json:"chat"`
+	Streaming         bool `json:"streaming"`
+	ToolCalling       bool `json:"toolCalling"`
+	Vision            bool `json:"vision"`
+	PDFInput          bool `json:"pdfInput"`
+	Embeddings        bool `json:"embeddings"`
+	StructuredOutput  bool `json:"structuredOutput"`
 	ReasoningControls bool `json:"reasoningControls"`
-	ContextCaching   bool `json:"contextCaching"`
+	ContextCaching    bool `json:"contextCaching"`
 	ExternalAgentLoop bool `json:"externalAgentLoop"`
 }
 

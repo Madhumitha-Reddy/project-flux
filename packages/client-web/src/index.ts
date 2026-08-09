@@ -143,6 +143,33 @@ export class WebFluxClient implements FluxClient {
     });
   }
 
+  listModelProviders() {
+    return this.request<import("@flux/bridge-contract").ModelProvider[]>("/model-providers");
+  }
+
+  getModelProvider(providerId: string) {
+    return this.request<import("@flux/bridge-contract").ModelProvider>(
+      `/model-providers/${encodeURIComponent(providerId)}`
+    );
+  }
+
+  updateModelProvider(providerId: string, config: Record<string, unknown>) {
+    return this.request<void>(`/model-providers/${encodeURIComponent(providerId)}`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+    });
+  }
+
+  listAIRuntimes() {
+    return this.request<import("@flux/bridge-contract").AIRuntime[]>("/ai-runtimes");
+  }
+
+  getAIRuntime(runtimeId: string) {
+    return this.request<import("@flux/bridge-contract").AIRuntime>(
+      `/ai-runtimes/${encodeURIComponent(runtimeId)}`
+    );
+  }
+
   listPlugins() {
     return this.request<PluginCatalogEntry[]>("/plugins");
   }

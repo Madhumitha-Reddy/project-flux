@@ -415,6 +415,8 @@ export interface ModelProvider {
   name: string;
   description?: string;
   enabled: boolean;
+  available: boolean;
+  models?: string[];
   config: Record<string, unknown>;
   capabilities: string[];
 }

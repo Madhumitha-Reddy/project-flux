@@ -25,11 +25,11 @@ import (
 )
 
 type Handler struct {
-	app             *application.Service
-	appData         *appdata.Store
-	desktopToken    string
-	plugins         *plugins.Manager
-	modelProviders  *modelproviders.Service
+	app            *application.Service
+	appData        *appdata.Store
+	desktopToken   string
+	plugins        *plugins.Manager
+	modelProviders *modelproviders.Service
 }
 
 const maxRequestBodyBytes = 50 << 20
@@ -533,6 +533,57 @@ func (h *Handler) invokePluginCapability(c *gin.Context) {
 		}
 		result, err := h.app.GitDiff(c.Request.Context(), vaultID, input.Path, input.Staged)
 		writePluginResult(c, result, err)
+	case "ai.providers":
+		if h.modelProviders == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"code": "ai_unavailable", "error": "AI provider service is unavailable"})
+			return
+		}
+		writePluginResult(c, h.modelProviders.ListProviders(), nil)
+	case "ai.chat":
+		if h.modelProviders == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"code": "ai_unavailable", "error": "AI provider service is unavailable"})
+			return
+		}
+		var input struct {
+			Provider string                       `json:"provider"`
+			Model    string                       `json:"model"`
+			Messages []modelproviders.ChatMessage `json:"messages"`
+			Stream   bool                         `json:"stream"`
+			StreamID string                       `json:"streamId"`
+		}
+		if json.Unmarshal(request.Input, &input) != nil {
+			writeRequestError(c, errors.New("invalid input"))
+			return
+		}
+		if input.StreamID != "" {
+			stream, err := h.modelProviders.PollChat(input.StreamID)
+			if err != nil {
+				writeRequestError(c, err)
+				return
+			}
+			writePluginResult(c, stream, nil)
+			return
+		}
+		if strings.TrimSpace(input.Provider) == "" || len(input.Messages) == 0 {
+			writeRequestError(c, errors.New("invalid input"))
+			return
+		}
+		workspace, pathErr := h.app.VaultPath(vaultID)
+		if pathErr != nil {
+			writeError(c, pathErr)
+			return
+		}
+		if input.Stream {
+			streamID := h.modelProviders.StartChat(workspace, input.Provider, input.Model, input.Messages)
+			writePluginResult(c, gin.H{"streamId": streamID, "reply": "", "done": false}, nil)
+			return
+		}
+		reply, err := h.modelProviders.Chat(c.Request.Context(), workspace, input.Provider, input.Model, input.Messages, nil)
+		if err != nil {
+			writeRequestError(c, err)
+			return
+		}
+		writePluginResult(c, gin.H{"reply": reply}, nil)
 	default:
 		c.JSON(http.StatusNotImplemented, gin.H{"code": "plugin_capability_unavailable", "error": "capability is not implemented"})
 	}

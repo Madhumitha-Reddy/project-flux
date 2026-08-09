@@ -24,6 +24,7 @@ var supportedCapabilities = map[string]bool{
 	"ui.command": true, "ui.view": true, "ui.external": true, "network.fetch": true, "background.run": true,
 	"git.status": true, "git.init": true, "git.stage": true, "git.unstage": true,
 	"git.commit": true, "git.pull": true, "git.push": true, "git.fetch": true, "git.diff": true,
+	"ai.providers": true, "ai.chat": true,
 }
 
 var supportedViewLocations = map[string]bool{
