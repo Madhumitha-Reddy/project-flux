@@ -62,6 +62,7 @@ export interface PluginRibbonItem {
   id: string;
   label: string;
   icon?: string;
+  iconSrc?: string;
   active?: boolean;
   onClick: () => void;
 }
@@ -1843,7 +1844,16 @@ export function WorkspaceRibbon({
         const PluginIcon = pluginIcons[item.icon as keyof typeof pluginIcons] ?? Puzzle;
         return (
           <IconButton key={item.id} label={item.label} active={item.active} onClick={item.onClick}>
-            <PluginIcon className="size-4" />
+            {item.iconSrc ? (
+              <span
+                aria-hidden="true"
+                className="size-4 bg-current"
+                style={{
+                  WebkitMask: `center / contain no-repeat url("${item.iconSrc}")`,
+                  mask: `center / contain no-repeat url("${item.iconSrc}")`,
+                }}
+              />
+            ) : <PluginIcon className="size-4" />}
           </IconButton>
         );
       })}

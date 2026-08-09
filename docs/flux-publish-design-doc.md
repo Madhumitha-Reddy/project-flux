@@ -1,8 +1,10 @@
 # Flux Publish — High-Level Design and Architecture
 
-> Status: Proposed
+> Status: Proposed — security and delivery scope revised 2026-08-09
 >
-> Target branch reviewed: `codex/ui-revamp`
+> Product baseline reviewed: `codex/ui-revamp`
+>
+> Design branch: `codex/publishing`
 >
 > Repository: `wizaye/project-flux`
 >
@@ -547,47 +549,67 @@ publish: false
 ---
 ```
 
-Recommended evaluation order:
+Authoritative evaluation order, from strongest to weakest:
+
+1. Hard exclusions reject the path unconditionally.
+2. `publish: false` rejects the note.
+3. A publication `exclude` rule rejects the note.
+4. Explicit UI selection for this publication selects the note.
+5. `publish: true` selects the note.
+6. A matching folder, glob, or tag `include` rule selects the note.
+7. The publication default decides.
+
+An explicit deny therefore always wins over an explicit allow. The same rules must be
+used by preview, export, and publish; renderers must not evaluate selection again.
 
 ```mermaid
 flowchart TD
     File["Vault File"]
     Internal{"Internal path?"}
     HardExclude["Reject"]
-    ConfigInclude{"Matches include rules?"}
-    Default["Use publication default"]
     FrontmatterFalse{"publish: false?"}
     Exclude{"Matches exclude?"}
+    ExplicitSelection{"Explicit UI selection?"}
+    FrontmatterTrue{"publish: true?"}
+    ConfigInclude{"Matches include rules?"}
+    Default{"Default is public?"}
     Selected["Selected"]
     Rejected["Not Published"]
 
     File --> Internal
 
     Internal -- Yes --> HardExclude
-    Internal -- No --> ConfigInclude
-
-    ConfigInclude -- Yes --> FrontmatterFalse
-    ConfigInclude -- No --> Default
-
-    Default --> FrontmatterFalse
-
+    Internal -- No --> FrontmatterFalse
     FrontmatterFalse -- Yes --> Rejected
     FrontmatterFalse -- No --> Exclude
-
     Exclude -- Yes --> Rejected
-    Exclude -- No --> Selected
+    Exclude -- No --> ExplicitSelection
+    ExplicitSelection -- Yes --> Selected
+    ExplicitSelection -- No --> FrontmatterTrue
+    FrontmatterTrue -- Yes --> Selected
+    FrontmatterTrue -- No --> ConfigInclude
+    ConfigInclude -- Yes --> Selected
+    ConfigInclude -- No --> Default
+    Default -- Yes --> Selected
+    Default -- No --> Rejected
 ```
 
-Hard exclusions always include:
+Hard exclusions always include normalized vault-relative paths matching:
 
 ```text
 .flux/**
 .git/**
 .obsidian/**
-trash
-temporary files
-editor swap files
+**/.DS_Store
+**/*~
+**/*.swp
+**/*.swo
+**/.#*
 ```
+
+Resolve symlinks before selection and reject any target outside the vault root. Directories
+named `trash` are not special unless configured; Flux-managed trash is already covered by
+`.flux/**`.
 
 Archive remains excluded by default but may be explicitly included.
 
@@ -745,8 +767,6 @@ export interface PublicationManifest {
 
   snapshot: {
     id: string;
-    vaultRevision: number;
-    generatedAt: string;
     contentHash: string;
   };
 
@@ -772,7 +792,7 @@ Page:
 export interface PublicationPage {
   id: string;
 
-  sourcePath: string;
+  contentPath: string;
   outputPath: string;
   slug: string;
 
@@ -794,6 +814,12 @@ export interface PublicationPage {
   draft: boolean;
 }
 ```
+
+The public contract MUST NOT contain vault revisions or source vault paths. `id` is an
+opaque publication-local identifier and `contentPath` points only to sanitized content
+inside the snapshot bundle. Source paths, source revisions, generation timestamps, and
+the source-to-public diagnostic map belong to the private publish-job record. They may be
+used for diagnostics but must never be copied to a renderer, repository, or deployment.
 
 Link:
 
@@ -934,7 +960,7 @@ It should:
 
 Flux must not lock the user's editor during a publish build.
 
-Use optimistic snapshot consistency.
+Use optimistic snapshot consistency with bounded verification.
 
 ```mermaid
 sequenceDiagram
@@ -950,23 +976,29 @@ sequenceDiagram
     P->>F: Read selected files + hashes
     P->>P: Verify hashes against index
 
-    alt file changed during snapshot
-        P->>I: Refresh changed paths
-        P->>F: Re-read changed files
-    end
-
     P->>V: Read current revision R2
 
     alt R2 == R
         P->>P: Snapshot current
     else R2 > R
-        P->>P: Snapshot valid but newer changes pending
+        P->>I: Re-evaluate selection and public projection at R2
+        alt selected set, hashes, graph, and backlinks unchanged
+            P->>P: Snapshot verified
+        else public projection changed
+            P->>P: Retry from R2
+        end
     end
 
     P-->>U: Publish snapshot
 ```
 
-A publish represents a specific immutable snapshot.
+A publish represents a specific immutable public projection, not merely a whole-vault
+revision. A private or otherwise unselected edit must not invalidate an unchanged public
+projection.
+
+Retry verification at most three times. If the selected set, selected content hashes, or
+public graph/backlink projection keeps changing, fail closed with a retryable "vault is
+changing" error. Never publish a partially verified snapshot.
 
 If the vault changes while deployment is happening:
 
@@ -989,14 +1021,14 @@ Do not restart an active publish indefinitely whenever the vault changes.
 
 # 17. Idempotent Publishing
 
-Publishing the same:
+Building the same public projection from:
 
 ```text
-vault revision
-+
 publication configuration
 +
-renderer version
+selected public content and assets
++
+public graph and backlink projection
 ```
 
 should produce the same snapshot hash.
@@ -1014,6 +1046,18 @@ snapshotHash =
     )
 ```
 
+Rendering is deterministic separately:
+
+```text
+artifactHash =
+    SHA256(
+        snapshotHash
+        + rendererId
+        + rendererVersion
+        + normalizedRendererConfig
+    )
+```
+
 If:
 
 ```text
@@ -1028,11 +1072,17 @@ Already up to date.
 
 No redundant Git commit is necessary.
 
+Whole-vault revision, generation time, job ID, diagnostics, and private source paths MUST
+NOT contribute to either hash. They remain private job metadata. Renderer version
+contributes only to the rendered-artifact hash, not the renderer-neutral snapshot hash.
+
 This is the correct place for idempotency.
 
 ---
 
-# 18. Publish Job Lifecycle
+# 18. Publication and Job Lifecycle
+
+Publication state:
 
 ```mermaid
 stateDiagram-v2
@@ -1057,24 +1107,31 @@ stateDiagram-v2
     Failed --> Snapshotting: retry
 ```
 
-Suggested statuses:
+Jobs are separate from publication state:
 
 ```ts
+type PublishJobKind = "preview" | "publish" | "unpublish";
+
 type PublishJobStatus =
   | "queued"
   | "snapshotting"
   | "rendering"
   | "deploying"
-  | "published"
+  | "ready"
+  | "succeeded"
   | "failed"
   | "cancelled";
 ```
+
+`ready` means a preview artifact is available. `succeeded` means a publish or unpublish
+operation completed. A job record may expose a preview artifact reference or deployment
+result according to its kind, never both.
 
 ---
 
 # 19. Backend Module
 
-Add:
+Start Phase 1 with:
 
 ```text
 server/internal/publish/
@@ -1082,26 +1139,11 @@ server/internal/publish/
 ├── selection.go
 ├── snapshot.go
 ├── manifest.go
-├── jobs.go
-├── renderer.go
-├── deployment.go
-├── secrets.go
-├── validation.go
-├── preview.go
-│
-├── renderers/
-│   ├── flux.go
-│   ├── quartz.go
-│   ├── flowershow.go
-│   └── static.go
-│
-└── providers/
-    ├── filesystem.go
-    ├── github.go
-    ├── vercel.go
-    ├── cloudflare.go
-    └── netlify.go
+└── validation.go
 ```
+
+Add jobs, renderer integration, deployment, and secrets only in the phase that first uses
+them. Do not scaffold provider or adapter directories for future integrations.
 
 Do not put all publication behavior inside:
 
@@ -1330,7 +1372,7 @@ Concept:
 
 ```ts
 import { loader } from "fumadocs-core/source";
-import { fluxPublicationSource } from "@flux/publish-runtime";
+import { fluxPublicationSource } from "@/lib/flux-publication-source";
 
 export const source = loader({
   source: fluxPublicationSource(snapshot),
@@ -1341,6 +1383,9 @@ export const source = loader({
 The renderer receives only virtual/public files.
 
 It does not crawl the vault.
+
+Keep this adapter local to `apps/publish` until a second first-party consumer needs it.
+Do not create a separate runtime package for one implementation.
 
 ---
 
@@ -1826,13 +1871,24 @@ Engineering
 
 ### Manual mode
 
-```yaml
-navigation:
-  - Home
-  - Engineering:
-      - Distributed Systems
-      - Databases
-  - Research
+Manual navigation lives in the publication's `site.navigation` field in
+`.flux/config.json`; it is not inferred from an additional YAML file.
+
+```json
+{
+  "site": {
+    "navigation": [
+      { "page": "/" },
+      {
+        "label": "Engineering",
+        "children": [
+          { "page": "/engineering/distributed-systems" },
+          { "page": "/engineering/databases" }
+        ]
+      }
+    ]
+  }
+}
 ```
 
 ### Mixed mode
@@ -1840,6 +1896,11 @@ navigation:
 Allow specific folders to be manually ordered while the rest follow the vault.
 
 Navigation is part of Publication Snapshot semantics.
+
+Navigation entries reference normalized public slugs, never source paths. A reference to
+an unpublished or missing page fails validation. Mixed mode uses an explicit `"auto"`
+child entry; renderers consume the resolved `navigation` artifact and do not interpret
+configuration themselves.
 
 ---
 
@@ -2416,6 +2477,17 @@ GET    /api/v1/publish/renderers
 GET    /api/v1/publish/providers
 ```
 
+Lifecycle semantics:
+
+- `unpublish` removes the remote deployment while preserving publication configuration,
+  history, and credentials.
+- `DELETE` removes local publication configuration only after the publication is already
+  unpublished, or when the request explicitly confirms that the remote deployment should
+  be removed first.
+- A failed unpublish must leave both the live deployment and local configuration intact.
+- Preview and publish are asynchronous jobs. They return a job immediately; completed
+  preview jobs expose a local preview URL or artifact reference.
+
 ---
 
 # 55. FluxClient Extensions
@@ -2455,7 +2527,7 @@ interface FluxClient {
   previewPublication(
     vaultId: string,
     publicationId: string
-  ): Promise<PublicationPreview>;
+  ): Promise<PublishJob>;
 
   publishPublication(
     vaultId: string,
@@ -3682,6 +3754,16 @@ Do not execute arbitrary vault-provided build commands.
 
 ---
 
+## Custom CSS
+
+Custom CSS is an explicit advanced setting, disabled by default. It may style only the
+already-public site and must not enable script execution. The first-party renderer must
+ship a restrictive Content Security Policy: no arbitrary script sources, connections, or
+frames; remote font and image origins require an explicit allowlist. Reject `@import` and
+external `url(...)` values unless their origins are allowlisted.
+
+---
+
 # 97. Logging
 
 Publish logs:
@@ -3857,41 +3939,20 @@ Do not hit real external APIs in ordinary test runs.
 
 # 100. Repository-Specific Implementation Plan
 
-## Phase 0 — Refactoring Prerequisites
+## Phase 0 — Contract and Privacy Fixtures
 
-No publishing UI yet.
+No publishing UI and no broad frontend refactor yet.
 
-### Extract Markdown Engine
+Define the smallest versioned publication contract and privacy fixture vault. Lock down:
 
-From:
+- Selection precedence.
+- Path and symlink validation.
+- Public manifest schema.
+- Deterministic hashing.
+- Private-link, graph, backlink, and search leakage tests.
 
-```text
-packages/app-core/src/reading-view.tsx
-```
-
-into:
-
-```text
-packages/markdown-engine
-```
-
-Keep desktop reading behavior unchanged.
-
-### Extract Reusable Graph Canvas
-
-From:
-
-```text
-packages/app-core/src/graph-view.tsx
-```
-
-into:
-
-```text
-packages/graph-ui
-```
-
-Keep product GraphView wrapper in `app-core`.
+Do not extract the Markdown engine or graph canvas before the snapshot boundary proves
+which reusable seams are actually required.
 
 ---
 
@@ -3947,6 +4008,10 @@ Add:
 apps/publish
 packages/publish-ui
 ```
+
+Before implementing renderer features, extract only the Markdown behavior and graph
+primitives the renderer actually consumes. Keep the existing product wrappers in
+`app-core`; avoid parallel parsers or graph semantics.
 
 Implement:
 
@@ -4363,44 +4428,51 @@ This gives Flux a strong OSS property:
 
 ---
 
-# 115. V1 Feature Checklist
+# 115. Release Checklists
 
-Required for credible Obsidian-Publish-class V1:
+## V1A — Safe Publication Core
 
-- [ ] Selective publication.
-- [ ] Markdown.
-- [ ] Wiki links.
-- [ ] Markdown links.
-- [ ] Internal embeds.
-- [ ] Images/assets.
-- [ ] Code highlighting.
+Ship and validate this boundary before building remote deployment:
+
+- [ ] Deterministic selective publication.
+- [ ] Markdown, wiki links, Markdown links, and internal embeds.
+- [ ] Referenced images/assets.
+- [ ] Privacy validation and unpublished-link handling.
+- [ ] Public-only graph and backlink artifacts.
+- [ ] Renderer-neutral manifest.
+- [ ] Local static export.
+- [ ] Local publication preview.
+- [ ] Idempotent rebuilds.
+- [ ] Privacy regression suite.
+
+## V1B — First-Party Publish Experience
+
+Add only after V1A is stable:
+
+- [ ] Flux/Fumadocs renderer.
+- [ ] Explorer navigation and TOC.
+- [ ] Backlinks and backlink context.
+- [ ] Search.
+- [ ] Tags.
+- [ ] Code highlighting and callouts.
+- [ ] Light, dark, and system themes.
+- [ ] Mobile layout.
+- [ ] Git-backed publishing and one remote target: GitHub Pages.
+- [ ] Public URL and deployment status.
+
+## Parity Backlog
+
+Useful, but not release blockers for the first trustworthy publisher:
+
 - [ ] Mermaid.
 - [ ] Math/KaTeX.
-- [ ] Callouts.
-- [ ] Tags.
-- [ ] Explorer navigation.
-- [ ] TOC.
-- [ ] Backlinks.
-- [ ] Backlink context.
-- [ ] Local graph.
-- [ ] Global graph.
-- [ ] Search.
+- [ ] Local graph UI.
+- [ ] Global graph UI.
 - [ ] Hover previews.
-- [ ] Light theme.
-- [ ] Dark theme.
-- [ ] System theme.
-- [ ] Custom logo.
-- [ ] Custom favicon.
-- [ ] Custom CSS.
-- [ ] SEO metadata.
-- [ ] Sitemap.
-- [ ] Mobile design.
-- [ ] Static export.
-- [ ] Git-backed publishing.
-- [ ] Public URL/status.
-- [ ] Privacy validation.
-- [ ] Unpublished-link handling.
-- [ ] Publication preview.
+- [ ] Custom logo and favicon.
+- [ ] Custom CSS with an explicit CSP and trust model.
+- [ ] SEO metadata and sitemap.
+- [ ] Additional deployment providers.
 
 ---
 
